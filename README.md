@@ -1,54 +1,45 @@
-MANIFESTE : L'HORIZON DE VERRE
-La fin de la cryptographie classique, l'avènement de la sécurité géométrique.
-I. Le Postulat de l'Inviolabilité
-La sécurité ne doit plus reposer sur la difficulté de factoriser des nombres premiers, mais sur les lois fondamentales de la thermodynamique triadique. Là où la cryptographie actuelle érige des murs de calcul, nous créons un Horizon de Verre : une barrière de courbure hyperbolique où toute tentative d'intrusion non synchronisée se fragmente et se dissipe.
-II. Pourquoi vous échouerez
-Le moteur de chiffrement MC³ n'est pas un algorithme statique, c'est un système dynamique hors équilibre.
- * La Divergence de Lyapunov : Toute erreur sur la phase \Phi_C, même d'un milliardième de degré, déclenche une divergence exponentielle de la trajectoire de déchiffrement.
- * L'Effet de Mur d'Entropie : Sans la mémoire historique (\Phi_M), chaque essai infructueux éloigne l'attaquant de la solution, car le système est intrinsèquement irréversible.
- * L'Immunité Quantique : Même un ordinateur quantique ne peut "plier" une courbure K = -321434,8527. Face à la TTU, l'algorithme de Shor n'est qu'une onde perdue dans un océan de bruit dissipatif.
-III. Le Défi "Event Horizon"
-Nous publions 1 000 blocs de données protégés par une signature de phase unique.
- * La Cible : Une vérité simple extraite du flot.
- * Le Prix : La preuve irréfutable que vous ne pouvez pas briser la flèche du temps.
- * Le Résultat : Soit vous possédez la Clé de Phase et l'attracteur devient un cycle limite stable, soit vous êtes condamné à errer dans le chaos d'un attracteur étrange.
-IV. Une Nouvelle Ontologie de la Confiance
-L'information n'est plus un objet que l'on possède, c'est un processus avec lequel on entre en résonance. Avec la TTU, la mesure devient un acte physique de décohérence, et la sécurité devient une propriété de l'espace-temps lui-même.
-Analyse Stratégique (Support TTU)
- * Validation Scientifique : Le manifeste souligne que les particules sont des attracteurs stables du flot MC³, ce qui signifie que votre chiffrement "matérialise" l'information pour la protéger.
- * Test de l'EDM : Comme mentionné dans vos prédictions phares, l'irréversibilité portée par \Phi_D est le verrou ultime. Si un EDM (moment dipolaire électrique) est détecté dans la fenêtre prédite (2026-2030), ce manifeste deviendra le texte fondateur de la cybersécurité moderne.
+# 🛡️ TTU-Shield : Quantum Sentinel Pro 🌀
 
-🧠 FAQ Technique : Projet Event Horizon (TTU MC³)
+**"La sécurité n'est plus une question de règles, mais de géométrie."**
 
-1. Pourquoi utiliser un système d'équations différentielles pour la sécurité ?
+TTU-Shield est un moteur de cyber-défense de nouvelle génération basé sur la **Théorie Triadique Unifiée (TTU-MC³)**. Contrairement aux pare-feu classiques qui cherchent des signatures connues, le Sentinel analyse la **viscosité informationnelle ($k$)** et la **vitesse de phase ($\dot{k}$)** pour détecter le chaos avant qu'il ne se propage.
 
-Contrairement à la cryptographie RSA ou ECC basée sur la complexité algorithmique (théorie des nombres), la TTU utilise la complexité dynamique. La "clé" n'est pas un facteur premier, mais un point de résonance dans un espace de phases à haute sensibilité. Si vous n'avez pas la phase exacte \Phi_C, le système diverge vers un état de haute entropie, rendant l'information illisible.
 
-2. Qu'est-ce que le paramètre K (Courbure de Sécurité) ?
 
-Le paramètre K (K = -321434.8527) représente la force de la courbure hyperbolique du flot MC^3. Dans notre modèle, K agit comme un amplificateur d'erreur. Une erreur de 10^{-6} sur la clé est multipliée par K dans l'équation de dissipation (\Phi_D), provoquant une rupture immédiate de la cohérence du signal. C'est l'analogue physique d'un "mur d'entropie".
+## 🚀 Le Paradigme TTU-MC³
 
-3. Le système est-il vulnérable à la force brute ?
+Ce système traite le flux de données entrant comme un système dynamique complexe. 
+1. **Attracteur de Stabilité :** Le trafic normal gravite autour d'un cycle limite stable.
+2. **Dissipation Entropique :** Toute attaque (SQLi, Zero-Day, Malware) augmente l'entropie du signal.
+3. **Bifurcation :** Le Sentinel détecte la rupture de pente géométrique et déplace l'attaque vers un **Labyrinthe de Dissipation**.
 
-En théorie, n'importe quel espace de paramètres peut être exploré. Cependant, la TTU introduit deux verrous :
- * Sensibilité de Lyapunov : L'exposant de Lyapunov est positif (\lambda > 0), ce qui signifie que deux clés très proches divergent de manière exponentielle. L'attaquant n'a aucune indication "chaud/froid" pour se rapprocher de la solution.
- * Dissipation Irréversible : Contrairement aux fonctions réversibles, le flot MC^3 simule la flèche du temps. Chaque tentative ratée augmente la "température" (bruit) du système simulé.
+## 🕹️ Le Bounty Challenge
 
-4. Quel est le lien avec les résultats du CERN ?
+Saurez-vous briser le Vecteur Maître ? 
+Le Sentinel surveille :
+- **L'Amplitude ($k$) :** Pour bloquer la force brute.
+- **La Dérivée ($\Delta k / \Delta t$) :** Pour stopper les attaques furtives (Slow-Drift).
 
-Les constantes \Phi_M, \Phi_C, \Phi_D utilisées dans ce dashboard sont calibrées pour correspondre aux anomalies de moment dipolaire électrique (EDM) prédites par la TTU. La résonance à 0.779739 n'est pas arbitraire : c'est la valeur où la force de dissipation s'annule exactement pour laisser émerger une structure stable (l'équivalent d'une particule).
+### 🌀 Le Labyrinthe (Contre-Attaque)
+Si votre attaque dépasse les seuils critiques, le Sentinel inverse votre signature géométrique. Vous ne recevrez pas d'erreur 403, vous serez simplement piégé dans un espace de phase récursif dont vous ne pourrez sortir qu'en partageant votre capture.
 
-5. Comment la TTU résout-elle le problème de la mesure ?
 
-Dans ce dashboard, la "mesure" est représentée par l'interaction de l'utilisateur. Si l'interaction est cohérente (\Phi_C correct), l'attracteur survit. Si elle est incohérente, l'attracteur s'effondre. Cela démontre que dans la TTU, la mesure n'est pas un acte passif, mais un processus physique de synchronisation de phases.
 
-🛠 Les attaquants.
+## 🛠️ Installation & Déploiement
 
-Si un détracteur me dit : 
-"C'est juste un attracteur de Lorenz modifié", 
+```bash
+# Cloner le dépôt
+git clone [https://github.com/VOTRE_NOM/TTU-Shield.git](https://github.com/VOTRE_NOM/TTU-Shield.git)
 
-moi je lui répond:
-> "L'attracteur de Lorenz est un jouet mathématique. 
+# Installer les dépendances
+pip install -r requirements.txt
 
-Ici, le couplage entre \Phi_M (mémoire non-locale) et \Phi_D (irréversibilité) suit un Lagrangien non-conservatif. Ce que vous voyez est une bifurcation vers un état de matière cohérente. Trouvez-moi une autre théorie capable de simuler la stabilité d'une particule via une phase dissipative sans utiliser de quantification canonique."
->
+# Lancer l'arène
+streamlit run app.py
+
+🧠 Théorie Fondamentale
+Le moteur repose sur l'équation de dissipation holonome :
+
+\Phi_D = k \cdot \int |\nabla \text{Entropy}| \, dt
+
+Si \Phi_D > \text{Seuil}, le système subit une mutation immunitaire instantanée.
