@@ -2,147 +2,169 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import hashlib
-import time
 import secrets
 from datetime import datetime
-from scipy import stats
-from collections import deque
 
-# --- CONFIGURATION STREAMLIT ---
-st.set_page_config(page_title="TTU-Shield Quantum Bounty", layout="wide")
+# --- CONFIGURATION THÈME ET PAGE ---
+st.set_page_config(
+    page_title="TTU-Shield : Quantum Sentinel",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- MODULES TTU-MC3 (VERSION PRO) ---
+# Custom CSS pour le look "Cyber-Security"
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; color: #00ff41; }
+    .stMetric { background-color: #1a1c24; border: 1px solid #00ff41; padding: 10px; border-radius: 10px; }
+    .stTextArea textarea { background-color: #07080a; color: #00ff41; border: 1px solid #00ff41; }
+    </style>
+    """, unsafe_allow_html=True)
 
-class QuantumResilientEncryption:
+# --- MOTEUR TTU-MC3 ---
+
+class TTUSentinel:
     def __init__(self):
-        # Initialisation avec une clé sécurisée
-        self.active_keys = {"bounty": hashlib.sha3_512(secrets.token_bytes(64)).digest()}
-    
-    def rotate_key(self):
-        new_seed = self.active_keys["bounty"] + secrets.token_bytes(32)
-        self.active_keys["bounty"] = hashlib.sha3_512(new_seed).digest()
-
-class TTUShieldSentinel:
-    def __init__(self):
-        self.system_health = 1.0
         self.k_viscosity = 0.05
-        # Utilisation d'une liste simple pour assurer la compatibilité Streamlit Charts
         self.history = [0.05] * 50 
+        self.velocity_history = [0.0] * 50 
 
-    def analyze_attack(self, payload):
-        if not payload: 
-            return 0.0, "NORMAL"
+    def analyze(self, payload):
+        if not payload: return 0.0, 0.0, "NORMAL"
         
-        # 1. Mesure de l'entropie (Dissipation Phi_D)
-        # On calcule la fréquence d'apparition de chaque caractère
+        # 1. Calcul de l'Entropie (Force du Chaos)
         prob = [float(payload.count(c)) / len(payload) for c in set(payload)]
         entropy = -sum([p * np.log2(p) for p in prob])
         
-        # 2. Calcul de la déviation du Vecteur Maître
-        # On normalise l'entropie par rapport au max théorique (8.0 pour de l'ASCII)
-        deviation = entropy / 8.0 
+        # 2. Vecteur Maître et Vitesse de Phase
+        new_k = (0.7 * self.k_viscosity) + (0.3 * (entropy / 8.0))
+        dk_dt = new_k - self.k_viscosity
         
-        # Mise à jour de la viscosité k (Lissage exponentiel TTU)
-        self.k_viscosity = 0.7 * self.k_viscosity + 0.3 * deviation
+        self.k_viscosity = new_k
+        self.history.append(new_k)
+        self.velocity_history.append(dk_dt)
         
-        # Mise à jour de l'historique (Glissement de fenêtre)
-        self.history.append(self.k_viscosity)
         if len(self.history) > 50:
             self.history.pop(0)
-        
-        # Seuils de bifurcation
-        if self.k_viscosity > 0.70:
-            return self.k_viscosity, "CRITICAL"
-        elif self.k_viscosity > 0.35:
-            return self.k_viscosity, "SUSPICIOUS"
-        return self.k_viscosity, "STABLE"
+            self.velocity_history.pop(0)
+            
+        # 3. Niveaux de Menace
+        if new_k > 0.75 or dk_dt > 0.18: return new_k, dk_dt, "CRITICAL"
+        if new_k > 0.40 or dk_dt > 0.08: return new_k, dk_dt, "WARNING"
+        return new_k, dk_dt, "STABLE"
 
-# --- INITIALISATION SESSION (CRUCIAL POUR STREAMLIT) ---
+# --- INITIALISATION ---
 if 'sentinel' not in st.session_state:
-    st.session_state.sentinel = TTUShieldSentinel()
-if 'crypto' not in st.session_state:
-    st.session_state.crypto = QuantumResilientEncryption()
+    st.session_state.sentinel = TTUSentinel()
 if 'leaderboard' not in st.session_state:
     st.session_state.leaderboard = []
+if 'labyrinth' not in st.session_state:
+    st.session_state.labyrinth = False
 
-# --- INTERFACE ---
-st.title("🛡️ TTU-Shield Sentinel Pro : Quantum Bounty Challenge")
-st.markdown("""
-### Saurez-vous briser la stabilité du Vecteur Maître ?
-Ce système détecte les attaques par analyse de la **viscosité informationnelle ($k$)**. 
-Toute tentative de bifurcation chaotique est immédiatement isolée par le bouclier immunitaire.
-""")
+# --- LOGIQUE D'INTERFACE ---
 
-# Métriques en temps réel
-m1, m2, m3 = st.columns(3)
-m1.metric("Santé du Système", f"{st.session_state.sentinel.system_health * 100:.1f}%")
-m2.metric("Viscosité $k$ (Actuelle)", f"{st.session_state.sentinel.k_viscosity:.4f}")
-m3.metric("Bounty Pool", "2,500 $ (Fictif)")
+if not st.session_state.labyrinth:
+    # --- MODE DÉFENSE ACTIVE ---
+    st.title("🛡️ TTU-Shield : Quantum Sentinel Pro")
+    st.subheader("Système de détection par analyse de phase holonome")
 
-st.divider()
-
-# --- ZONE DE TEST ET VISUALISATION ---
-col_left, col_right = st.columns([1.5, 1])
-
-with col_left:
-    st.header("💻 Terminal d'Injection de Chaos")
-    hacker_name = st.text_input("Alias du Hacker", "Anonymous_Hacker")
-    attack_payload = st.text_area("Injectez votre payload (Code, SQL, Malware Masked...)", height=220, placeholder="Collez votre code d'attaque ici...")
+    # ÉTAT DES RADARS
+    k_curr = st.session_state.sentinel.k_viscosity
+    v_curr = st.session_state.sentinel.velocity_history[-1]
     
-    if st.button("🚀 LANCER L'ATTAQUE SUR LE VECTEUR"):
-        if attack_payload:
-            k_score, status = st.session_state.sentinel.analyze_attack(attack_payload)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("VISCOSITÉ (k)", f"{k_curr:.4f}", delta="Niveau de Dissipation")
+    with col2:
+        st.metric("RADAR DE PHASE (dk/dt)", f"{v_curr:.4f}", delta="Accélération", delta_color="inverse")
+    with col3:
+        status_text = "BOUCLIER ACTIF" if k_curr < 0.4 else "INSTABILITÉ"
+        st.metric("STATUT SYSTÈME", status_text)
+
+    st.divider()
+
+    c1, c2 = st.columns([1, 1])
+
+    with c1:
+        st.header("⌨️ Console d'Attaque")
+        alias = st.text_input("Votre Alias Hacker", "Spectre_Alpha")
+        payload = st.text_area("Injectez votre Payload (SQL, Code, Chaos...)", height=200)
+        
+        if st.button("LANCER L'INJECTION"):
+            k, dk, lvl = st.session_state.sentinel.analyze(payload)
             
-            if status == "CRITICAL":
-                st.error(f"🚨 ALERTE ROUGE : Bifurcation détectée (k={k_score:.3f}) ! Attaque neutralisée.")
-                st.session_state.leaderboard.append({
-                    "Hacker": hacker_name, 
-                    "Score k": round(k_score, 4), 
-                    "Heure": datetime.now().strftime("%H:%M:%S"),
-                    "Result": "CAPTURED"
-                })
-            elif status == "SUSPICIOUS":
-                st.warning(f"⚠️ INSTABILITÉ : Le Vecteur Maître dévie (k={k_score:.3f}). Surveillance accrue.")
+            if lvl == "CRITICAL":
+                st.session_state.labyrinth = True
+                st.session_state.last_attack = {"alias": alias, "k": k, "dk": dk}
+                st.session_state.leaderboard.append({"Hacker": alias, "Force": k, "Vitesse": dk, "Date": datetime.now().strftime("%H:%M")})
+                st.rerun()
+            elif lvl == "WARNING":
+                st.warning(f"⚠️ DÉTECTION : Le Sentinel détecte une anomalie géométrique. (k: {k:.2f})")
             else:
-                st.success(f"✅ ÉCHEC : L'attracteur reste stable (k={k_score:.3f}). Aucune menace détectée.")
-        else:
-            st.info("Entrez une charge utile pour tester la résistance du système.")
+                st.success("✅ ÉCHEC : L'information a été dissipée sans bruit. Le vecteur reste stable.")
 
-with col_right:
-    st.header("📡 Visualisation Holonome")
-    # Création d'un DataFrame pour forcer Streamlit à tracer correctement
-    df_visu = pd.DataFrame({
-        "Viscosité k": st.session_state.sentinel.history
-    })
-    
-    # Graphique interactif
-    st.line_chart(df_visu, height=300, use_container_width=True)
-    st.caption("Monitoring de la trajectoire informationnelle. Un pic > 0.7 indique un saut holonome (attaque).")
+    with c2:
+        st.header("📊 Monitoring Temps Réel")
+        # Graphique de Viscosité (Bleu/Vert Cyber)
+        st.write("Amplitude du Vecteur Maître ($k$)")
+        st.line_chart(st.session_state.sentinel.history, color="#00ff41")
+        
+        # Graphique de Vitesse (Rouge Radar)
+        st.write("Radar de Phase (Vitesse de Mutation)")
+        st.area_chart(st.session_state.sentinel.velocity_history, color="#ff4b4b")
 
-
-
-# --- LEADERBOARD ---
-st.divider()
-st.header("🏆 Mur de la Gloire (Menaces Neutralisées)")
-if st.session_state.leaderboard:
-    df_lb = pd.DataFrame(st.session_state.leaderboard)
-    st.dataframe(df_lb.sort_values(by="Score k", ascending=False), use_container_width=True)
 else:
-    st.info("Le système est actuellement inviolé. Soyez le premier à tenter une bifurcation.")
+    # --- MODE LABYRINTHE (CONTRE-ATTAQUE) ---
+    st.markdown("""<h1 style='text-align: center; color: #ff4b4b;'>🌀 LABYRINTHE DE DISSIPATION ACTIVÉ</h1>""", unsafe_allow_html=True)
+    
+    att = st.session_state.last_attack
+    
+    st.error(f"### ALERTE : {att['alias']}, votre signature a été inversée.")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.info(f"""
+        **Analyse de votre défaite :**
+        - Votre Force d'impact ($k$) : `{att['k']:.4f}`
+        - Votre Accélération ($dk/dt$) : `{att['dk']:.4f}`
+        - Résultat : **Capture Holonome**
+        """)
+    
+    with col_b:
+        st.write("**Votre empreinte géométrique avant capture :**")
+        # Petit graphique "miroir" pour montrer la géométrie inversée
+        mirror_data = np.sin(np.linspace(0, 10, 20)) * att['k']
+        st.line_chart(mirror_data, color="#ff4b4b")
 
-# --- BARRE LATÉRALE ---
-st.sidebar.title("🛠️ Paramètres TTU-MC³")
-if st.sidebar.button("🔐 Rotation Clé Quantique"):
-    st.session_state.crypto.rotate_key()
-    st.sidebar.success("Clé rotée par mutation entropique.")
+    st.markdown("---")
+    st.markdown("""
+    ### 🔓 Comment sortir du Labyrinthe ?
+    Votre vecteur est bloqué dans une boucle de rétroaction. Pour libérer vos ressources et retenter le challenge, vous devez reconnaître la supériorité du bouclier TTU.
+    
+    **Partagez votre capture pour prouver que vous avez osé défier le Sentinel.**
+    """)
+    
+    st.link_button("📢 Partager ma capture sur X / Twitter", 
+                   f"https://twitter.com/intent/tweet?text=Mon%20attaque%20a%20été%20dissipée%20par%20le%20TTU-Shield%20!%20Force%20k:%20{att['k']:.2f}.%20Qui%20peut%20faire%20mieux%20?")
+    
+    if st.button("🔄 Retenter une injection (Reset Phase)"):
+        st.session_state.labyrinth = False
+        st.session_state.sentinel = TTUSentinel() # Reset du sentinel pour le prochain test
+        st.rerun()
 
-st.sidebar.markdown(f"""
-**Statut Sentinel :**
-- Mode : Défense Active
-- Algorithme : $MC^3$ Dissipatif
-- Post-Quantum : Actif
+# --- FOOTER / LEADERBOARD ---
+st.sidebar.title("🏆 Hall of Fail")
+if st.session_state.leaderboard:
+    df = pd.DataFrame(st.session_state.leaderboard)
+    st.sidebar.table(df[["Hacker", "Force"]])
+else:
+    st.sidebar.write("Aucun hacker capturé pour le moment.")
 
----
-*Dernière rotation :*
-{datetime.now().strftime("%H:%M:%S")}
+st.sidebar.divider()
+st.sidebar.markdown("""
+**Niveaux de difficulté :**
+- **0.0 - 0.35** : Drone (Sain)
+- **0.36 - 0.70** : Spectre (Suspect)
+- **> 0.70** : Anomalie (Bloqué)
 """)
