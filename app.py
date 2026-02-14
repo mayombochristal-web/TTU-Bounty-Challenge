@@ -1,129 +1,158 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import hashlib
 import time
 import secrets
 from datetime import datetime
 
-# --- CONFIGURATION HAUTE PRÉCISION ---
-st.set_page_config(
-    page_title="TTU-Shield : Ultra-Sentinel v2.1",
-    page_icon="⚡",
-    layout="wide"
-)
+# --- CONFIGURATION LABYRINTHE ---
+st.set_page_config(page_title="TTU-Shield : The Labyrinth", page_icon="🌀", layout="wide")
 
-# Thème Cyber-Security Final
+# CSS Cyber-Guerre
 st.markdown("""
     <style>
     .main { background-color: #05070a; color: #00ff41; }
-    .stMetric { background-color: #0d1117; border: 1px solid #10b981; padding: 15px; border-radius: 8px; }
-    .stTextArea textarea { background-color: #07080a; color: #00ff41; border: 1px solid #10b981; font-family: 'Consolas', monospace; }
+    .stMetric { background-color: #0d1117; border: 1px solid #00ff41; padding: 15px; border-radius: 8px; }
+    .stTextArea textarea { background-color: #07080a; color: #00ff41; border: 1px solid #00ff41; font-family: 'Consolas', monospace; }
+    h1, h2, h3 { color: #00ff41 !important; text-shadow: 0 0 10px #00ff41; }
     </style>
     """, unsafe_allow_html=True)
 
-class UltraSentinelV2:
+class UltraSentinelLabyrinth:
     def __init__(self):
         self.master_key = secrets.token_hex(32)
-        self.history = [0.0] * 50
-        self.velocity_history = [0.0] * 50
+        self.history_k = [0.0] * 50
+        self.history_v = [0.0] * 50
+        self.history_a = [0.0] * 50 # Accélération (Jerk)
 
     def get_dynamic_salt(self):
-        """Mutation de phase temporelle (Moving Target Defense)"""
         ts = str(int(time.time() * 4)) 
         h = hashlib.sha256((self.master_key + ts).encode()).hexdigest()
-        return (int(h[:2], 16) / 255) * 0.015 # Mutation ultra-fine
+        return (int(h[:2], 16) / 255) * 0.02
 
-    def analyze(self, payload):
-        if not payload: return 0.0, 0.0, "STABLE"
+    def analyze_contextual(self, payload, context="message"):
+        if not payload: return 0.0, 0.0, 0.0, "STABLE"
         
-        # 1. ANALYSE SÉMANTIQUE (Ratio de pureté alphabétique)
-        alpha_chars = sum(c.isalpha() or c.isspace() for c in payload)
-        total_len = len(payload)
-        human_ratio = alpha_chars / total_len if total_len > 0 else 0
+        # 1. MATRICE MULTI-INPUT (Sensibilité par contexte)
+        alpha = sum(c.isalpha() or c.isspace() for c in payload)
+        total = len(payload)
+        h_ratio = alpha / total if total > 0 else 0
         
-        # 2. PONDÉRATION GÉOMÉTRIQUE (Signature de code)
-        critical_symbols = ";|&<>$'\"\\{}[]()_="
-        weight = sum(8.0 if char in critical_symbols else 0.05 for char in payload)
+        # Profils de sensibilité
+        weights = {
+            "nom": {"sym": 20.0, "alpha": 0.01, "sens": 1.5},
+            "email": {"sym": 10.0, "alpha": 0.05, "sens": 1.2},
+            "message": {"sym": 8.0, "alpha": 0.05, "sens": 0.08 if h_ratio > 0.85 else 1.0}
+        }
+        cfg = weights.get(context, weights["message"])
         
-        # 3. ENTROPIE DE SHANNON (Complexité du signal)
-        prob = [float(payload.count(c)) / total_len for c in set(payload)]
+        # 2. CALCUL GÉOMÉTRIQUE
+        symbols = ";|&<>$'\"\\{}[]()_="
+        w_score = sum(cfg["sym"] if char in symbols else cfg["alpha"] for char in payload)
+        
+        prob = [float(payload.count(c)) / total for c in set(payload)]
         entropy = -sum([p * np.log2(p) for p in prob])
         
-        # 4. CALIBRATION PRO (Ajustement selon le ratio humain)
-        # On réduit la sensibilité pour le texte naturel (ton test à 0.32 deviendra STABLE)
-        sensitivity = 0.08 if human_ratio > 0.85 else 1.0
+        k = ((w_score * entropy * cfg["sens"]) / (total + 1)) + self.get_dynamic_salt()
         
-        k_base = (weight * entropy * sensitivity) / (total_len + 1)
-        k_final = k_base + self.get_dynamic_salt()
+        # 3. VECTEURS DE PHASE (Vitesse et Accélération)
+        v = abs(k - self.history_k[-1])
+        a = abs(v - self.history_v[-1])
         
-        # Vitesse de mutation (Accélération)
-        velocity = abs(k_final - self.history[-1])
-        
-        self.history.append(k_final)
-        self.velocity_history.append(velocity)
-        if len(self.history) > 50:
-            self.history.pop(0)
-            self.velocity_history.pop(0)
-            
-        # --- NOUVEAUX SEUILS CALIBRÉS ---
-        # Stable < 0.35 | Warning < 0.70 | Critical > 0.70
-        if k_final > 0.70 or velocity > 0.30: status = "CRITICAL"
-        elif k_final > 0.35: status = "WARNING"
+        self.history_k.append(k); self.history_v.append(v); self.history_a.append(a)
+        if len(self.history_k) > 50: 
+            for h in [self.history_k, self.history_v, self.history_a]: h.pop(0)
+
+        # SEUILS DU LABYRINTHE
+        if k > 0.75 or v > 0.40: status = "CRITICAL"
+        elif k > 0.35: status = "WARNING"
         else: status = "STABLE"
             
-        return k_final, velocity, status
+        return k, v, a, status
 
-# --- INITIALISATION ---
+# --- LOGIQUE DE SESSION ---
 if 'sentinel' not in st.session_state:
-    st.session_state.sentinel = UltraSentinelV2()
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
+    st.session_state.sentinel = UltraSentinelLabyrinth()
+if 'trapped' not in st.session_state:
+    st.session_state.trapped = False
 
-# --- DASHBOARD ---
-st.title("🛡️ TTU-Shield : Ultra-Sentinel Pro")
-st.caption("Moteur de Dissipation Polymorphe | Calibration : v2.1")
-
-# Récupération de l'analyse en temps réel
-last_p = st.session_state.get('last_p', "")
-k, v, s = st.session_state.sentinel.analyze(last_p)
-
-m1, m2, m3 = st.columns(3)
-with m1: st.metric("K-MASS", f"{k:.5f}")
-with m2: st.metric("PHASE ACCEL", f"{v:.5f}")
-with m3:
-    color = "red" if s == "CRITICAL" else "orange" if s == "WARNING" else "green"
-    st.markdown(f"**VECTEUR D'ÉTAT :** :{color}[{s}]")
-
-st.divider()
-
-col_l, col_r = st.columns([1, 1])
-
-with col_l:
-    st.header("⌨️ Input Stream")
-    data = st.text_area("Flux à analyser...", height=150, placeholder="Injectez du texte ou du code...")
-    if st.button("EXÉCUTER L'ANALYSE GÉOMÉTRIQUE"):
-        st.session_state.last_p = data
-        k_res, v_res, s_res = st.session_state.sentinel.analyze(data)
-        if s_res != "STABLE":
-            st.session_state.logs.append({
-                "Horodatage": datetime.now().strftime("%H:%M:%S"),
-                "Vecteur K": round(k_res, 4),
-                "Type": s_res,
-                "Action": "Neutralisé"
-            })
+# --- ÉCRAN DU LABYRINTHE (PIÈGE) ---
+if st.session_state.trapped:
+    st.markdown("<h1 style='text-align: center; color: red;'>🌀 LABYRINTHE DE DISSIPATION</h1>", unsafe_allow_html=True)
+    st.error(f"### ACCÈS REFUSÉ : Votre signature géométrique est instable.")
+    st.write("Le Sentinel a détecté une torsion de phase. Votre payload a été dissipé dans un espace de Hilbert.")
+    
+    st.info("🔓 **TÉMOIGNAGE REQUIS :** Pour réinitialiser votre vecteur et sortir du labyrinthe, vous devez témoigner de la robustesse de l'algorithme.")
+    
+    testimony = st.text_area("Expliquez pourquoi votre attaque a échoué...")
+    if st.button("ENVOYER LE TÉMOIGNAGE ET RESET"):
+        st.session_state.trapped = False
+        st.success("Vecteur réinitialisé. Sortie du labyrinthe autorisée.")
         st.rerun()
+    
+    st.link_button("📢 Twitter / X : Déclarer sa défaite", f"https://twitter.com/intent/tweet?text=Mon%20attaque%20a%20été%20pulvérisée%20par%20le%20TTU-Shield%20!%20Impossible%20de%20contourner%20la%20géométrie%20de%20phase.")
+    st.stop()
 
-with col_r:
-    st.header("📈 Waveform Monitor")
-    st.line_chart(st.session_state.sentinel.history, color="#00ff41")
+# --- INTERFACE PRINCIPALE ---
+st.title("🛡️ TTU-Shield : Quantum Labyrinth")
+st.markdown("*Bounty Challenge : Défiez le Sentinel. Si vous échouez, vous entrez dans le labyrinthe.*")
 
+# Matrice Multi-Input
+with st.sidebar:
+    st.header("⚙️ Configuration Matrix")
+    context = st.selectbox("Contexte du champ", ["nom", "email", "message"])
+    st.divider()
+    st.write("**Mode :** Piège Actif")
+    st.write("**Algorithme :** Holonome V3")
+
+# Inputs
+col_input, col_viz = st.columns([1, 1.2])
+
+with col_input:
+    st.subheader("⌨️ Injection Stream")
+    alias = st.text_input("Alias Hacker", "Spectre_Alpha")
+    payload = st.text_area("Entrée (SQL, Code, Script...)", height=200)
+    
+    if st.button("TENTER L'INTRUSION"):
+        k, v, a, s = st.session_state.sentinel.analyze_contextual(payload, context)
+        if s == "CRITICAL":
+            st.session_state.trapped = True
+            st.rerun()
+        elif s == "WARNING":
+            st.warning(f"⚠️ Alerte de phase : Mutation suspecte détectée (k={k:.2f})")
+        else:
+            st.success("✅ Information dissipée. Aucune torsion détectée.")
+
+with col_viz:
+    st.subheader("🔮 Visualisation Holonome 3D")
+    # Sphère de Phase 3D
+    fig = go.Figure(data=[go.Scatter3d(
+        x=st.session_state.sentinel.history_k,
+        y=st.session_state.sentinel.history_v,
+        z=st.session_state.sentinel.history_a,
+        mode='lines+markers',
+        line=dict(color='#00ff41', width=4),
+        marker=dict(size=4, color='#ff4b4b', symbol='sphere')
+    )])
+    fig.update_layout(
+        scene=dict(
+            xaxis_title='Masse (K)',
+            yaxis_title='Vitesse (V)',
+            zaxis_title='Accélération (A)',
+            bgcolor="black"
+        ),
+        margin=dict(l=0, r=0, b=0, t=0),
+        paper_bgcolor="black"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# Dashboard Métriques
 st.divider()
-st.header("📋 Registre d'Audit")
-if st.session_state.logs:
-    df = pd.DataFrame(st.session_state.logs)
-    st.table(df.tail(5))
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Exporter le rapport (.CSV)", csv, "sentinel_report.csv", "text/csv")
-else:
-    st.info("Flux pur. Aucune anomalie détectée.")
+k, v, a, s = st.session_state.sentinel.analyze_contextual(payload, context)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("K-MASS", f"{k:.4f}")
+c2.metric("V-PHASE", f"{v:.4f}")
+c3.metric("A-JERK", f"{a:.4f}")
+c4.metric("STATUS", s)
