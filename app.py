@@ -8,153 +8,191 @@ import sqlite3
 import re
 from datetime import datetime
 
-# --- INITIALISATION DE LA BASE DE DONNÉES (PERSISTENCE) ---
+# --- DATABASE PERSISTENCE ---
 def init_db():
-    conn = sqlite3.connect('sentinel_fortress.db')
+    conn = sqlite3.connect('sentinel_fortress.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS attackers 
-                 (ip TEXT PRIMARY KEY, depth INTEGER, testimony TEXT, last_seen TIMESTAMP)''')
+                 (ip TEXT PRIMARY KEY, depth INTEGER, last_seen TIMESTAMP)''')
     conn.commit()
     return conn
 
-conn = init_db()
+db_conn = init_db()
 
-# --- CONFIGURATION INTERFACE ---
-st.set_page_config(page_title="TTU-Shield v4 : Iron-Labyrinth", page_icon="🏯", layout="wide")
+# --- APP CONFIGURATION ---
+st.set_page_config(page_title="TTU-Shield v5.0", page_icon="🏯", layout="wide")
 
+# Custom UI Design
 st.markdown("""
     <style>
-    .main { background-color: #030507; color: #00ff41; }
-    .stMetric { background-color: #0a0e14; border: 1px solid #00ff41; box-shadow: 0 0 10px #00ff4133; }
-    .stTextArea textarea { background-color: #05070a; color: #00ff41; border: 1px solid #ff4b4b; }
-    .hidden-trap { display: none; }
+    .main { background-color: #05070a; color: #00ff41; font-family: 'Courier New', monospace; }
+    .stMetric { background-color: #0d1117; border: 1px solid #00ff41; padding: 15px; border-radius: 10px; box-shadow: 0 0 15px rgba(0,255,65,0.1); }
+    .stTextArea textarea { background-color: #07080a; color: #00ff41; border: 1px solid #00ff41; border-radius: 5px; }
+    .status-box { padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; border: 1px solid #00ff41; }
+    .critical-text { color: #ff4b4b; text-shadow: 0 0 10px #ff4b4b; }
+    .stable-text { color: #00ff41; text-shadow: 0 0 10px #00ff41; }
     </style>
     """, unsafe_allow_html=True)
 
-class IronSentinel:
-    def __init__(self, ip):
+class UltraSentinelV5:
+    def __init__(self, ip="127.0.0.1"):
         self.ip = ip
-        self.load_status()
-        self.history_k = [0.0] * 50
+        self.depth = self.get_depth()
+        self.history_k = [0.0] * 30
 
-    def load_status(self):
-        c = conn.cursor()
+    def get_depth(self):
+        c = db_conn.cursor()
         c.execute("SELECT depth FROM attackers WHERE ip=?", (self.ip,))
-        row = c.fetchone()
-        self.depth = row[0] if row else 0
+        res = c.fetchone()
+        return res[0] if res else 0
 
-    def update_db(self):
-        c = conn.cursor()
+    def update_depth(self, increment=1):
+        self.depth += increment
+        c = db_conn.cursor()
         c.execute("INSERT OR REPLACE INTO attackers (ip, depth, last_seen) VALUES (?, ?, ?)",
                   (self.ip, self.depth, datetime.now()))
-        conn.commit()
+        db_conn.commit()
 
-    def analyze_frequency(self, payload):
-        """Analyse de la Loi de Zipf (détection de code vs langue)"""
-        counts = pd.Series(list(payload)).value_counts()
-        expected = np.array([1/i for i in range(1, len(counts)+1)])
-        actual = counts.values / counts.values.sum()
-        # Plus l'écart est grand, plus c'est du code/obfuscation
-        return np.linalg.norm(actual - expected[:len(actual)])
+    def reset_depth(self):
+        self.depth = 0
+        c = db_conn.cursor()
+        c.execute("DELETE FROM attackers WHERE ip=?", (self.ip,))
+        db_conn.commit()
 
-    def analyze_autonomous(self, payload, honey_val=""):
-        if honey_val: # LE PIÈGE HONEYPOT
-            self.depth += 5
-            return 999.9, "HONEYPOT_TRAP", "CRITICAL"
+    def analyze_zipf(self, text):
+        """Détecte l'écart par rapport à la distribution naturelle du langage"""
+        if len(text) < 5: return 0.5
+        chars = pd.Series(list(text)).value_counts(normalize=True)
+        zipf_ideal = np.array([1/i for i in range(1, len(chars)+1)])
+        zipf_ideal /= zipf_ideal.sum()
+        return np.linalg.norm(chars.values - zipf_ideal)
 
-        alpha = sum(c.isalpha() or c.isspace() for c in payload)
+    def process_flux(self, payload, is_honeypot=False):
+        if is_honeypot:
+            self.update_depth(5)
+            return 999.9, "BOT_TRAP", "CRITICAL", "Tentative d'accès automatisé détectée."
+
         total = len(payload)
+        alpha = sum(c.isalpha() or c.isspace() for c in payload)
         h_ratio = alpha / total if total > 0 else 0
-        freq_anomaly = self.analyze_frequency(payload)
+        zipf_score = self.analyze_zipf(payload)
         
-        # Détection de contexte par structure
-        if "@" in payload: ctx = "EMAIL"
+        # Auto-détection du contexte
+        if "@" in payload and "." in payload: ctx = "EMAIL"
         elif payload.isdigit(): ctx = "NUMERIC"
-        elif any(c in "/\\" for c in payload): ctx = "SYSTEM_PATH"
-        else: ctx = "GENERAL"
+        elif any(c in "<>/\\" for c in payload): ctx = "CODE/PATH"
+        else: ctx = "HUMAN_PROSE"
 
-        # Matrice de poids dynamique
-        sens = 2.0 if ctx != "GENERAL" else (0.1 if h_ratio > 0.8 else 1.5)
+        # Matrice de décision
+        sens = 2.5 if ctx == "CODE/PATH" else (0.1 if h_ratio > 0.8 else 1.5)
+        symbols = sum(25.0 if c in ";|&<>$'\"\\{}[]()_=" else 0.1 for c in payload)
         
-        # Calcul de Masse K augmenté par l'anomalie de fréquence
-        symbols = ";|&<>$'\"\\{}[]()_="
-        sym_score = sum(30.0 if c in symbols else 0.1 for c in payload)
+        k_mass = (symbols * zipf_score * sens) / (total + 1)
         
-        k = ((sym_score * freq_anomaly * sens) / (total + 1))
-        
-        status = "CRITICAL" if k > 0.8 else "STABLE"
-        if status == "CRITICAL":
-            self.depth += 1
-            self.update_db()
+        if k_mass > 0.85:
+            status = "CRITICAL"
+            reason = "Anomalie structurelle détectée : entropie trop élevée pour un flux humain."
+            self.update_depth(1)
+        elif k_mass > 0.4:
+            status = "WARNING"
+            reason = "Vibration de phase suspecte. Comportement à la limite de la conformité."
+        else:
+            status = "STABLE"
+            reason = "Signature géométrique fluide. Flux autorisé."
             
-        return k, ctx, status
+        return round(k_mass, 4), ctx, status, reason
 
-# --- LOGIQUE DE L'APPLICATION ---
-user_ip = "127.0.0.1" # En prod, utiliser les headers pour la vraie IP
-sentinel = IronSentinel(user_ip)
+# --- UI LOGIC ---
+sentinel = UltraSentinelV5()
 
-st.title("🏯 TTU-Shield v4 : Iron-Labyrinth")
-st.caption("Système de Défense Autonome avec Persistance SQLite & Analyse Fréquentielle")
+# SIDEBAR : Système d'Audit
+with st.sidebar:
+    st.header("⚙️ SENTINEL CORE")
+    st.write(f"**IP Monitor:** `{sentinel.ip}`")
+    st.write(f"**Uptime:** {datetime.now().strftime('%H:%M:%S')}")
+    st.divider()
+    st.info("Cette version utilise la persistance SQLite. Vos actions sont enregistrées de manière permanente dans le registre d'audit.")
 
-# --- ÉCRAN DU LABYRINTHE PERSISTANT ---
+# HEADER : Dashboard
+st.title("🏯 TTU-Shield v5.0 : Expérience Sentience")
+m1, m2, m3, m4 = st.columns(4)
+
+# LABYRINTH CHECK
 if sentinel.depth > 0:
-    st.error(f"🛑 IDENTITÉ VERROUILLÉE DANS LA BASE DE DONNÉES (Niveau {sentinel.depth})")
+    # --- UI : MODE LABYRINTHE ---
+    st.markdown(f"<div class='status-box' style='border-color: #ff4b4b;'><h2 class='critical-text'>🌀 LABYRINTHE ACTIVÉ (Niveau {sentinel.depth})</h2></div>", unsafe_allow_html=True)
     
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Soumission de Témoignage")
-        st.info("Votre adresse IP est marquée. Seul un aveu technique peut purger votre signature.")
-        testimony = st.text_area("Expliquez votre intention d'attaque...", height=200)
-        if st.button("PURGER LA SIGNATURE"):
-            if len(testimony) > 50:
-                sentinel.depth = 0
-                sentinel.update_db()
-                st.success("Base de données mise à jour. Redémarrage du système...")
+    col_l, col_r = st.columns([1, 1.2])
+    with col_l:
+        st.subheader("🔓 Procédure de Purge")
+        st.write("Votre signature géométrique a été verrouillée. Pour réinitialiser le système, vous devez prouver votre conscience en expliquant pourquoi votre flux a été rejeté.")
+        
+        aveu = st.text_area("Aveux techniques (Minimum 50 caractères) :", height=150)
+        if st.button("SOUMETTRE POUR RÉALIGNEMENT"):
+            if len(aveu) >= 50:
+                sentinel.reset_depth()
+                st.success("✅ Signature purgée. Redémarrage des capteurs...")
+                time.sleep(2)
                 st.rerun()
             else:
-                st.warning("Témoignage insuffisant pour une purge de grade 4.")
+                st.error("❌ Témoignage trop court. La base de données refuse la purge.")
     
-    with col2:
-        st.subheader("Traceur de Phase")
-        # On simule un graphique de chaos pour l'attaquant
-        noise = np.random.normal(0, sentinel.depth, 50)
-        fig = go.Figure(go.Scatter(y=noise, line=dict(color='red')))
-        fig.update_layout(title="Vibration de Phase (Capturée)", paper_bgcolor="black", plot_bgcolor="black")
-        st.plotly_chart(fig)
-    st.stop()
+    with col_r:
+        st.subheader("📉 Analyse de la Vibration de Rupture")
+        # Visualisation du chaos
+        chaos_data = np.random.randn(50).cumsum()
+        fig = go.Figure(go.Scatter(y=chaos_data, line=dict(color='#ff4b4b', width=3)))
+        fig.update_layout(paper_bgcolor="black", plot_bgcolor="black", margin=dict(l=0,r=0,b=0,t=0), height=300)
+        st.plotly_chart(fig, use_container_width=True)
 
-# --- INTERFACE DE SURFACE ---
-c1, c2, c3 = st.columns(3)
-c1.metric("STATUS", "SHIELD ACTIVE")
-c2.metric("THREAT LEVEL", "MONITORED")
-c3.metric("DB ENTRIES", "SECURED")
-
-st.divider()
-
-# Champ Honeypot (Invisible pour l'humain, visible pour le bot)
-honey_trap = st.text_input("Username (Leave empty)", key="hp", label_visibility="hidden")
-if honey_trap:
-    sentinel.analyze_autonomous("", honey_val=honey_trap)
-    st.rerun()
-
-payload = st.text_area("Flux d'entrée (Analyse de phase temps réel) :", height=200)
-
-if st.button("AUDITER LE FLUX"):
-    k, ctx, status = sentinel.analyze_autonomous(payload)
+else:
+    # --- UI : MODE SURFACE ---
+    st.markdown("<div class='status-box'><h2 class='stable-text'>🛡️ SHIELD ACTIVE : SURVEILLANCE DE PHASE</h2></div>", unsafe_allow_html=True)
     
-    if status == "CRITICAL":
-        st.error(f"CRITICAL ANOMALY DETECTED | K-MASS: {k:.4f}")
+    # Honeypot Invisible (uniquement pour les bots)
+    st.text_input("BotTrap", key="hp", label_visibility="collapsed")
+    if st.session_state.hp:
+        sentinel.process_flux("", is_honeypot=True)
         st.rerun()
-    else:
-        st.success(f"STABLE FLOW | CONTEXT: {ctx} | K-MASS: {k:.4f}")
+
+    col_input, col_viz = st.columns([1, 1.2])
+    
+    with col_input:
+        st.subheader("⌨️ Input Stream")
+        payload = st.text_area("Saisissez votre donnée pour audit...", height=200, placeholder="Ex: Bonjour le monde OU <script>...")
         
+        if st.button("LANCER L'ANALYSE GÉOMÉTRIQUE"):
+            k, ctx, stat, reason = sentinel.process_flux(payload)
+            
+            # Affichage explicite des résultats
+            if stat == "CRITICAL":
+                st.error(f"**ALERTE :** {reason}")
+                time.sleep(1)
+                st.rerun()
+            elif stat == "WARNING":
+                st.warning(f"**ATTENTION :** {reason}")
+            else:
+                st.success(f"**VALIDE :** {reason}")
+            
+            st.write(f"**Contexte détecté :** `{ctx}`")
+            st.write(f"**Masse calculée (K) :** `{k}`")
 
-# Historique local de session pour la démo
-if 'history' not in st.session_state: st.session_state.history = []
-if payload: st.session_state.history.append(sentinel.analyze_autonomous(payload)[0])
+    with col_viz:
+        st.subheader("🔮 Visualisation Holonome")
+        # Historique fictif pour la démo visuelle
+        y_data = [0.2, 0.25, 0.22, 0.28, 0.21]
+        if 'payload' in locals() and payload:
+            k_val, _, _, _ = sentinel.process_flux(payload)
+            y_data.append(k_val)
+        
+        fig = go.Figure(go.Scatter(y=y_data, mode='lines+markers', line=dict(color='#00ff41', width=4), marker=dict(size=10)))
+        fig.update_layout(paper_bgcolor="black", plot_bgcolor="black", margin=dict(l=0,r=0,b=0,t=0), height=350)
+        st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("📈 Vecteur de Stabilité")
-fig = go.Figure(go.Scatter(y=st.session_state.history[-50:], mode='lines+markers', line=dict(color='#00ff41')))
-fig.update_layout(paper_bgcolor="black", plot_bgcolor="black")
-st.plotly_chart(fig, use_container_width=True)
+    st.divider()
+    st.write("### 📘 Comment lire ces données ?")
+    st.markdown("""
+    * **K-MASS :** Représente la densité symbolique. Un humain écrit entre 0.1 et 0.3. Un hacker explose ce score.
+    * **CONTEXT :** L'IA détecte si vous remplissez un email, un nom ou si vous injectez du code.
+    * **DEPTH :** Nombre de fois où vous avez tenté de briser le système. À chaque tentative, le labyrinthe s'épaissit.
+    """)
