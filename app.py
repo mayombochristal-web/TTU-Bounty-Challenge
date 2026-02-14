@@ -6,16 +6,26 @@ import sqlite3
 import time
 from datetime import datetime
 
-# --- INITIALISATION SÉCURISÉE (CORRECTION STRUCTURE) ---
-# Si vous changez la structure, il faut parfois vider le cache ou forcer la réinitialisation
-if 'db_memory' not in st.session_state:
-    conn = sqlite3.connect(':memory:', check_same_thread=False)
-    c = conn.cursor()
-    # Structure à 7 colonnes incluant le PSEUDO
-    c.execute('CREATE TABLE attackers (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER, last_seen TEXT)')
-    c.execute('CREATE TABLE audit_logs (timestamp TEXT, ip TEXT, pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)')
-    st.session_state.db_memory = conn
-    st.session_state.chart_data = []
+# --- MOTEUR DE PERSISTANCE SÉCURISÉ (DATABASE VERSIONING) ---
+DB_VERSION = "8.3" # Changer ce numéro force la réinitialisation de la structure
+
+def init_db():
+    # Si la version change ou si la DB n'existe pas, on initialise
+    if 'db_memory' not in st.session_state or st.session_state.get('db_ver') != DB_VERSION:
+        conn = sqlite3.connect(':memory:', check_same_thread=False)
+        c = conn.cursor()
+        # Suppression au cas où pour éviter les conflits de colonnes
+        c.execute('DROP TABLE IF EXISTS attackers')
+        c.execute('DROP TABLE IF EXISTS audit_logs')
+        # Création avec les 7 colonnes strictes
+        c.execute('CREATE TABLE attackers (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER, last_seen TEXT)')
+        c.execute('CREATE TABLE audit_logs (timestamp TEXT, ip TEXT, pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)')
+        st.session_state.db_memory = conn
+        st.session_state.db_ver = DB_VERSION
+        if 'chart_data' not in st.session_state:
+            st.session_state.chart_data = []
+
+init_db()
 
 def get_conn():
     return st.session_state.db_memory
@@ -25,7 +35,7 @@ if 'user_pseudo' not in st.session_state:
     st.markdown("""
         <div style="background-color: #0d1117; border: 2px solid #00ff41; padding: 30px; border-radius: 15px; text-align: center;">
             <h1 style='color: #00ff41;'>🔐 ACCÈS TTU-MC3 SÉCURITÉ</h1>
-            <p style='color: #8b949e;'>Initialisation du profil d'expertise requise.</p>
+            <p style='color: #8b949e;'>Initialisation du profil d'expertise v8.3</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -35,10 +45,10 @@ if 'user_pseudo' not in st.session_state:
             st.session_state.user_pseudo = pseudo
             st.rerun()
         else:
-            st.error("Pseudo requis (min. 2 caractères).")
+            st.error("Pseudo requis.")
     st.stop()
 
-# --- CLASSE SENTINEL OMNISCIENTE ---
+# --- CLASSE SENTINEL ---
 class AbsoluteSentinel:
     def __init__(self, ip="127.0.0.1", pseudo="Unknown"):
         self.ip = ip
@@ -55,12 +65,10 @@ class AbsoluteSentinel:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn = get_conn()
         c = conn.cursor()
-        # INSERTION À 7 COLONNES (Synchronisée avec CREATE TABLE)
+        # Insertion garantie à 7 colonnes
         c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?, ?)", 
                   (ts, self.ip, self.pseudo, ctx, k, status, payload[:100]))
-        
         st.session_state.chart_data.append(k)
-        
         if depth_up > 0:
             self.depth += depth_up
             c.execute("INSERT OR REPLACE INTO attackers VALUES (?, ?, ?, ?)", 
@@ -79,47 +87,37 @@ class AbsoluteSentinel:
         sql_keywords = ["SELECT", "DROP", "UNION", "DELETE", "INSERT", "UPDATE", "TABLE", "WHERE", "FROM", "SCRIPT"]
         has_sql = any(k in payload.upper() for k in sql_keywords)
         has_symbols = any(c in ";()[]{}<>" for c in payload)
-        
         ctx = "CODE/INJECTION" if (has_sql or has_symbols) else "HUMAN_PROSE"
         sens = (6.0 + self.depth) if ctx == "CODE/INJECTION" else 0.4 
-
         symbols_count = sum(45.0 if c in ";|&<>$'\"\\{}[]()_=" else 0.4 for c in payload)
         zipf_score = self.analyze_frequency(payload)
-        
         k_mass = (symbols_count * zipf_score * sens) / np.log1p(len(payload))
         k_mass = round(float(k_mass), 4)
-        
         status = "CRITICAL" if (k_mass > 1.0 or (has_sql and k_mass > 0.3)) else "STABLE"
-        depth_to_add = 1 if status == "CRITICAL" else 0
-        
-        self.log_and_update(ctx, k_mass, status, payload, depth_up=depth_to_add)
+        self.log_and_update(ctx, k_mass, status, payload, depth_up=(1 if status == "CRITICAL" else 0))
         return k_mass, ctx, status
 
-# --- CONFIGURATION UI ---
+# --- UI CONFIG ---
 st.set_page_config(page_title="TTU-MC3 SÉCURITÉ", page_icon="🫆", layout="wide")
-user_ip = "STATION-REMOTE" # Note: L'IP réelle nécessite des librairies spécifiques sur Cloud
+user_ip = "127.0.0.1" # Simulation IP
 sentinel = AbsoluteSentinel(ip=user_ip, pseudo=st.session_state.user_pseudo)
 
 # --- LE LABYRINTHE ---
 if sentinel.depth > 0:
     st.markdown(f"<h1 style='color: #ff4b4b; text-align: center;'>🌀 LABYRINTHE NIVEAU {sentinel.depth}</h1>", unsafe_allow_html=True)
-    st.error(f"IDENTITÉ COMPROMISE : {st.session_state.user_pseudo} @ {user_ip}")
-    
     col_l, col_r = st.columns(2)
     with col_l:
-        choice = st.radio("Destin :", ["Purge par Aveu", "Assaut Abyssal"])
-        if choice == "Purge par Aveu":
-            testimony = st.text_area("Témoignez de l'efficacité de l'algorithme (50 chars min) :")
-            if st.button("PURGER"):
+        choice = st.radio("Destin de l'Opérateur :", ["Aveu technique (Purge)", "Assaut Abyssal (Injection)"])
+        if choice == "Aveu technique (Purge)":
+            testimony = st.text_area("Expliquez l'échec de votre attaque (50 chars) :")
+            if st.button("PURGER LA SIGNATURE"):
                 if len(testimony) >= 50:
                     get_conn().execute("DELETE FROM attackers WHERE ip=?", (user_ip,))
-                    st.success("Signature réalignée.")
-                    time.sleep(1)
                     st.rerun()
         else:
-            p = st.text_area("Nouvelle injection :")
-            if st.button("ASSAUT"):
-                k, c, s = sentinel.process_flux(p)
+            p = st.text_area("Injection de force :")
+            if st.button("LANCER L'ASSAUT"):
+                sentinel.process_flux(p)
                 st.rerun()
     with col_r:
         if st.session_state.chart_data:
@@ -133,17 +131,17 @@ st.title(f"🫆 TTU-MC3 : Abyss Engine")
 c1, c2, c3 = st.columns(3)
 c1.metric("OPÉRATEUR", st.session_state.user_pseudo)
 c2.metric("IP", user_ip)
-c3.metric("PROF. ABYSSE", sentinel.depth)
+c3.metric("ABYSS DEPTH", sentinel.depth)
 
 st.divider()
 
 col_in, col_viz = st.columns([1, 1.2])
 with col_in:
-    payload = st.text_area("Audit de vecteur...", height=150)
-    if st.button("LANCER L'AUDIT"):
+    payload = st.text_area("Audit de flux...", height=150)
+    if st.button("ANALYSER"):
         k, ctx, stat = sentinel.process_flux(payload)
         if stat == "CRITICAL": st.rerun()
-        else: st.success(f"STABLE (K:{k})")
+        else: st.success(f"STABLE (K-Mass: {k})")
 
 with col_viz:
     if st.session_state.chart_data:
@@ -151,10 +149,11 @@ with col_viz:
         fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#00ff41"), height=300)
         st.plotly_chart(fig, use_container_width=True)
 
-# --- EXPORT EXPERTISE ---
+# --- RAPPORT D'EXPERTISE ---
 st.divider()
-if st.button("📊 GÉNÉRER RAPPORT D'EXPERTISE CSV"):
+st.subheader("📊 Rapport d'Expertise Détaillé")
+if st.button("GÉNÉRER LE RAPPORT CSV"):
     df = pd.read_sql_query("SELECT * FROM audit_logs ORDER BY timestamp DESC", get_conn())
     st.dataframe(df)
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 TÉLÉCHARGER LE RAPPORT", csv, f"Expertise_TTU_{st.session_state.user_pseudo}.csv", "text/csv")
+    st.download_button("📥 TÉLÉCHARGER EXPERTISE.CSV", csv, f"Expertise_TTU_{st.session_state.user_pseudo}.csv", "text/csv")
