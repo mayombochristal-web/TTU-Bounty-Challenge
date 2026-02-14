@@ -6,15 +6,15 @@ import sqlite3
 import time
 from datetime import datetime
 
-# --- INITIALISATION SÉCURISÉE ---
+# --- INITIALISATION SÉCURISÉE (CORRECTION STRUCTURE) ---
+# Si vous changez la structure, il faut parfois vider le cache ou forcer la réinitialisation
 if 'db_memory' not in st.session_state:
     conn = sqlite3.connect(':memory:', check_same_thread=False)
     c = conn.cursor()
+    # Structure à 7 colonnes incluant le PSEUDO
     c.execute('CREATE TABLE attackers (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER, last_seen TEXT)')
     c.execute('CREATE TABLE audit_logs (timestamp TEXT, ip TEXT, pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)')
     st.session_state.db_memory = conn
-    
-if 'chart_data' not in st.session_state:
     st.session_state.chart_data = []
 
 def get_conn():
@@ -23,22 +23,19 @@ def get_conn():
 # --- SYSTÈME D'IDENTIFICATION ---
 if 'user_pseudo' not in st.session_state:
     st.markdown("""
-        <style>
-        .auth-box { background-color: #0d1117; border: 2px solid #00ff41; padding: 40px; border-radius: 15px; text-align: center; }
-        </style>
-        <div class="auth-box">
-            <h1 style='color: #00ff41;'>🔐 PROTOCOLE D'ACCÈS TTU-MC3</h1>
-            <p style='color: #8b949e;'>L'identification est obligatoire pour l'initialisation de la signature de phase.</p>
+        <div style="background-color: #0d1117; border: 2px solid #00ff41; padding: 30px; border-radius: 15px; text-align: center;">
+            <h1 style='color: #00ff41;'>🔐 ACCÈS TTU-MC3 SÉCURITÉ</h1>
+            <p style='color: #8b949e;'>Initialisation du profil d'expertise requise.</p>
         </div>
     """, unsafe_allow_html=True)
     
-    pseudo = st.text_input("ENTREZ VOTRE PSEUDONYME OPÉRATEUR / HACKER :", key="init_pseudo")
-    if st.button("INITIALISER LA SESSION"):
-        if len(pseudo) > 2:
+    pseudo = st.text_input("NOM DE L'OPÉRATEUR / SIGNATURE HACKER :", key="init_pseudo")
+    if st.button("ACTIVER LA SESSION"):
+        if len(pseudo) >= 2:
             st.session_state.user_pseudo = pseudo
             st.rerun()
         else:
-            st.warning("Pseudo trop court.")
+            st.error("Pseudo requis (min. 2 caractères).")
     st.stop()
 
 # --- CLASSE SENTINEL OMNISCIENTE ---
@@ -58,12 +55,16 @@ class AbsoluteSentinel:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn = get_conn()
         c = conn.cursor()
+        # INSERTION À 7 COLONNES (Synchronisée avec CREATE TABLE)
         c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?, ?)", 
                   (ts, self.ip, self.pseudo, ctx, k, status, payload[:100]))
+        
         st.session_state.chart_data.append(k)
+        
         if depth_up > 0:
             self.depth += depth_up
-            c.execute("INSERT OR REPLACE INTO attackers VALUES (?, ?, ?, ?)", (self.ip, self.pseudo, self.depth, ts))
+            c.execute("INSERT OR REPLACE INTO attackers VALUES (?, ?, ?, ?)", 
+                      (self.ip, self.pseudo, self.depth, ts))
         conn.commit()
 
     def analyze_frequency(self, text):
@@ -75,7 +76,7 @@ class AbsoluteSentinel:
 
     def process_flux(self, payload):
         if not payload: return 0.0, "NONE", "STABLE"
-        sql_keywords = ["SELECT", "DROP", "UNION", "DELETE", "INSERT", "UPDATE", "TABLE", "WHERE", "FROM"]
+        sql_keywords = ["SELECT", "DROP", "UNION", "DELETE", "INSERT", "UPDATE", "TABLE", "WHERE", "FROM", "SCRIPT"]
         has_sql = any(k in payload.upper() for k in sql_keywords)
         has_symbols = any(c in ";()[]{}<>" for c in payload)
         
@@ -94,109 +95,66 @@ class AbsoluteSentinel:
         self.log_and_update(ctx, k_mass, status, payload, depth_up=depth_to_add)
         return k_mass, ctx, status
 
-# --- UI CONFIGURATION ---
+# --- CONFIGURATION UI ---
 st.set_page_config(page_title="TTU-MC3 SÉCURITÉ", page_icon="🫆", layout="wide")
-
-st.markdown("""
-    <style>
-    .main { background-color: #030507; color: #00ff41; font-family: 'Courier New', monospace; }
-    .stMetric { background-color: #0d1117; border: 1px solid #00ff41; padding: 15px; border-radius: 10px; }
-    .stTextArea textarea { background-color: #07080a !important; color: #00ff41 !important; border: 1px solid #00ff41 !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# Extraction IP (Simulée pour Streamlit Cloud)
-user_ip = "192.168.1.1" # Dans un vrai déploiement, utiliser des headers
+user_ip = "STATION-REMOTE" # Note: L'IP réelle nécessite des librairies spécifiques sur Cloud
 sentinel = AbsoluteSentinel(ip=user_ip, pseudo=st.session_state.user_pseudo)
-
-# --- HEADER ---
-st.title(f"🫆 TTU-MC3 : Abyss Engine [Opérateur: {st.session_state.user_pseudo}]")
 
 # --- LE LABYRINTHE ---
 if sentinel.depth > 0:
     st.markdown(f"<h1 style='color: #ff4b4b; text-align: center;'>🌀 LABYRINTHE NIVEAU {sentinel.depth}</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: #ff4b4b;'>ALERTE : Signature de {st.session_state.user_pseudo} [{user_ip}] compromise.</p>", unsafe_allow_html=True)
+    st.error(f"IDENTITÉ COMPROMISE : {st.session_state.user_pseudo} @ {user_ip}")
     
-    col_lab1, col_lab2 = st.columns(2)
-    
-    with col_lab1:
-        st.subheader("💀 Choisissez votre destin")
-        choice = st.radio("Le Sentinel offre une alternative :", 
-                          ["Soumettre un aveu technique (Purge)", 
-                           "S'enfoncer plus profondément (Injection de Force)"], index=0)
-
-        if choice == "Soumettre un aveu technique (Purge)":
-            testimony = st.text_area("Aveu technique (Min. 50 caractères) :", height=150)
-            if st.button("TENTER UNE PURGE"):
+    col_l, col_r = st.columns(2)
+    with col_l:
+        choice = st.radio("Destin :", ["Purge par Aveu", "Assaut Abyssal"])
+        if choice == "Purge par Aveu":
+            testimony = st.text_area("Témoignez de l'efficacité de l'algorithme (50 chars min) :")
+            if st.button("PURGER"):
                 if len(testimony) >= 50:
-                    c = get_conn().cursor()
-                    c.execute("DELETE FROM attackers WHERE ip=?", (sentinel.ip,))
-                    st.success("✅ Signature purgée.")
-                    time.sleep(2)
-                    st.rerun()
-                else: st.error("❌ Aveu trop court.")
-        else:
-            new_payload = st.text_area("Nouvel essai d'injection (Abyss Mode) :", height=150)
-            if st.button("LANCER L'ASSAUT DANS L'ABYSSE"):
-                k, ctx, stat = sentinel.process_flux(new_payload)
-                if stat == "CRITICAL":
-                    st.error(f"☢️ ÉCHEC : K-Mass {k}")
+                    get_conn().execute("DELETE FROM attackers WHERE ip=?", (user_ip,))
+                    st.success("Signature réalignée.")
                     time.sleep(1)
                     st.rerun()
-                else:
-                    c = get_conn().cursor()
-                    c.execute("DELETE FROM attackers WHERE ip=?", (sentinel.ip,))
-                    st.success("✅ BRÈCHE RÉUSSIE !")
-                    time.sleep(2)
-                    st.rerun()
-                
-    with col_lab2:
-        st.subheader("📉 Signature Entropique")
+        else:
+            p = st.text_area("Nouvelle injection :")
+            if st.button("ASSAUT"):
+                k, c, s = sentinel.process_flux(p)
+                st.rerun()
+    with col_r:
         if st.session_state.chart_data:
-            fig_err = go.Figure(go.Scatter(y=st.session_state.chart_data, line=dict(color='#ff4b4b', width=4, dash='dot')))
-            fig_err.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#ff4b4b"), margin=dict(l=0,r=0,b=0,t=0), height=300)
-            st.plotly_chart(fig_err, use_container_width=True)
+            fig = go.Figure(go.Scatter(y=st.session_state.chart_data, line=dict(color='#ff4b4b', width=3, dash='dot')))
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#ff4b4b"), height=300)
+            st.plotly_chart(fig, use_container_width=True)
     st.stop()
 
 # --- SURFACE ---
-m1, m2, m3 = st.columns(3)
-m1.metric("AGENT", st.session_state.user_pseudo)
-m2.metric("IP ADDR", user_ip)
-m3.metric("ABYSS DEPTH", sentinel.depth)
+st.title(f"🫆 TTU-MC3 : Abyss Engine")
+c1, c2, c3 = st.columns(3)
+c1.metric("OPÉRATEUR", st.session_state.user_pseudo)
+c2.metric("IP", user_ip)
+c3.metric("PROF. ABYSSE", sentinel.depth)
 
 st.divider()
 
-col1, col2 = st.columns([1, 1.2])
-with col1:
-    st.subheader("⌨️ Input Stream Audit")
-    payload = st.text_area("Vecteur de test...", height=180)
-    if st.button("AUDITER"):
+col_in, col_viz = st.columns([1, 1.2])
+with col_in:
+    payload = st.text_area("Audit de vecteur...", height=150)
+    if st.button("LANCER L'AUDIT"):
         k, ctx, stat = sentinel.process_flux(payload)
-        if stat == "CRITICAL":
-            st.error(f"☢️ ANOMALIE : K-Mass {k}")
-            time.sleep(1)
-            st.rerun()
-        else: st.success(f"✔️ STABLE : K-Mass {k}")
+        if stat == "CRITICAL": st.rerun()
+        else: st.success(f"STABLE (K:{k})")
 
-with col2:
-    st.subheader("🔮 Topologie Dynamique")
+with col_viz:
     if st.session_state.chart_data:
         fig = go.Figure(go.Scatter(y=st.session_state.chart_data, mode='lines+markers', line=dict(color='#00ff41')))
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#00ff41"), margin=dict(l=0,r=0,b=0,t=0), height=300)
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#00ff41"), height=300)
         st.plotly_chart(fig, use_container_width=True)
 
 # --- EXPORT EXPERTISE ---
 st.divider()
-st.subheader("📊 Rapport d'Expertise de Sécurité")
-if st.button("GÉNÉRER LE DOSSIER D'AUDIT"):
+if st.button("📊 GÉNÉRER RAPPORT D'EXPERTISE CSV"):
     df = pd.read_sql_query("SELECT * FROM audit_logs ORDER BY timestamp DESC", get_conn())
     st.dataframe(df)
-    
-    # Création du CSV détaillé
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 TÉLÉCHARGER LE RAPPORT D'EXPERTISE (CSV)",
-        data=csv,
-        file_name=f"Expertise_TTU_MC3_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime='text/csv',
-    )
+    st.download_button("📥 TÉLÉCHARGER LE RAPPORT", csv, f"Expertise_TTU_{st.session_state.user_pseudo}.csv", "text/csv")
