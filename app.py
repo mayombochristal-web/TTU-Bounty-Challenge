@@ -37,17 +37,14 @@ if 'db' not in st.session_state:
 
 # --- UTILITAIRES DE SÉCURITÉ ---
 def get_visitor_ip():
-    """Récupération d'IP plus robuste (Streamlit context)"""
+    """Récupération d'IP robuste"""
     from streamlit.web.server.websocket_headers import _get_websocket_headers
     headers = _get_websocket_headers()
     if headers:
-        # On privilégie l'IP réelle sans faire confiance aveugle au Forwarded-For
         return headers.get("X-Forwarded-For", headers.get("Host", "127.0.0.1")).split(",")[0]
     return "127.0.0.1"
 
 user_ip = get_visitor_ip()
-
-
 
 class SecurityEngine:
     """Moteur de détection hybride Signature + Statistique"""
@@ -61,16 +58,14 @@ class SecurityEngine:
 
     @staticmethod
     def sanitize(text):
-        """Nettoie le texte pour l'affichage (Anti-XSS)"""
         return html.escape(text)
 
     @staticmethod
     def detect_signatures(payload):
-        """Détection par motifs (RegEx) - La première ligne de défense"""
         patterns = [
             r"(;|--|union|select|drop|insert|delete|update)", # SQL
             r"(<script|alert\(|onerror=)",                   # XSS
-            r"(\:|\||\&|\{|\})",                             # Fork Bombs / Bash
+            r"(\:|\||\&|\{|\})",                             # Fork Bombs
             r"(\.\./|\/etc\/passwd|\/windows\/win\.ini)"      # Path Traversal
         ]
         hits = 0
@@ -82,31 +77,22 @@ class SecurityEngine:
     @staticmethod
     def analyze_flux(payload, ip, pseudo):
         if not payload: return 0.0, "VOID", "STABLE"
-        
-        # 1. Analyse Signature
         sig_hits = SecurityEngine.detect_signatures(payload)
-        
-        # 2. Analyse K-Mass (Statistique)
         symbols = sum(1 for c in payload if c in ";|&<>$'\"\\{}[]()_=")
-        # On compense la dilution : le diviseur log est plafonné
         length_factor = np.log1p(len(payload)) if len(payload) < 500 else np.log1p(500)
         k_mass = (symbols * 1.5 + (sig_hits * 10.0)) / length_factor
         k_mass = round(float(k_mass), 2)
         
-        # 3. Décision
         status = "CRITICAL" if (k_mass > 2.0 or sig_hits > 0) else "STABLE"
         ctx = "CODE/INJECTION" if sig_hits > 0 else "TEXT/PROSE"
         
-        # 4. Persistance Atomique
         conn = st.session_state.db
         c = conn.cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Log l'audit
         c.execute("INSERT INTO audit_logs (timestamp, ip, pseudo, context, kmass, status, payload) VALUES (?,?,?,?,?,?,?)",
                   (ts, ip, pseudo, ctx, k_mass, status, payload[:500]))
         
-        # Update Attacker
         if status == "CRITICAL":
             c.execute("""INSERT INTO attackers (ip, pseudo, depth, last_seen, total_kmass) 
                          VALUES (?, ?, 1, ?, ?) 
@@ -114,11 +100,39 @@ class SecurityEngine:
                          depth = depth + 1, last_seen = ?, total_kmass = total_kmass + ?""",
                       (ip, pseudo, ts, k_mass, ts, k_mass))
         conn.commit()
-        
         return k_mass, ctx, status
 
+# --- MODULE HONEY POT (LE PIÈGE) ---
+def render_honeypot():
+    st.sidebar.divider()
+    with st.sidebar.expander("🛠️ ZONE DEBUG (ACCÈS RESTREINT)"):
+        st.caption("Faille simulée : Injection SQL directe")
+        fake_user = st.text_input("Admin ID :", placeholder="ex: admin' --")
+        fake_pass = st.text_input("Password :", type="password")
+        
+        if st.button("LOGIN"):
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn = st.session_state.db
+            c = conn.cursor()
+            
+            # Sanction immédiate et lourde pour tentative d'intrusion délibérée
+            c.execute("""INSERT INTO attackers (ip, pseudo, depth, last_seen, total_kmass) 
+                         VALUES (?, ?, 5, ?, 50.0) 
+                         ON CONFLICT(ip) DO UPDATE SET 
+                         depth = depth + 5, last_seen = ?, total_kmass = total_kmass + 50.0""",
+                      (user_ip, st.session_state.user_pseudo, ts, ts))
+            
+            c.execute("""INSERT INTO audit_logs (timestamp, ip, pseudo, context, kmass, status, payload) 
+                         VALUES (?, ?, ?, 'HONEYPOT_TRAP', 99.9, 'BANNED', ?)""",
+                      (ts, user_ip, st.session_state.user_pseudo, f"Tentative d'accès Admin : {fake_user}"))
+            conn.commit()
+            
+            st.error("DÉTECTION INTRUSION : Signalement envoyé au centre de contrôle.")
+            time.sleep(1)
+            st.rerun()
+
 # --- INTERFACE UTILISATEUR ---
-st.set_page_config(page_title="TTU BASTION V11", layout="wide")
+st.set_page_config(page_title="TTU BASTION V11.1", layout="wide")
 
 if 'user_pseudo' not in st.session_state:
     st.title("🔐 ACCÈS BASTION TTU-MC3")
@@ -129,12 +143,12 @@ if 'user_pseudo' not in st.session_state:
             st.rerun()
     st.stop()
 
-# Vérification du bannissement en TEMPS RÉEL (SQL source of truth)
+# Vérification du bannissement
 current_depth = SecurityEngine.is_banned(user_ip)
 
 if current_depth > 0:
     st.error(f"🚨 ACCÈS BLOQUÉ - NIVEAU DE MENACE {current_depth}")
-    st.warning(f"L'IP {user_ip} a été isolée suite à une détection critique.")
+    st.warning(f"L'IP {user_ip} a été isolée. Signature suspecte enregistrée.")
     
     testimony = st.text_area("Formulez une demande de rémission (30 car. min) :")
     if st.button("TRANSMETTRE"):
@@ -143,13 +157,16 @@ if current_depth > 0:
             c.execute("UPDATE attackers SET depth = MAX(0, depth - 1) WHERE ip = ?", (user_ip,))
             st.session_state.db.commit()
             st.success("Analyse du plaidoyer... Réduction de la menace accordée.")
-            time.sleep(2)
+            time.sleep(1.5)
             st.rerun()
     st.stop()
 
 # --- DASHBOARD PRINCIPAL ---
 st.title("🛡️ TERMINAL DE SÉCURITÉ TTU")
 st.sidebar.info(f"Opérateur : {st.session_state.user_pseudo}\n\nIP : {user_ip}")
+
+# Activation du Honey Pot
+render_honeypot()
 
 col1, col2 = st.columns([1, 1])
 
@@ -175,8 +192,6 @@ with col2:
         fig = go.Figure(go.Scatter(x=df_hist['Time'], y=df_hist['K-Mass'], mode='lines+markers', line=dict(color='#00ff41')))
         fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
-
-
 
 # --- SECTION ADMINISTRATIVE ---
 st.divider()
