@@ -12,7 +12,6 @@ from datetime import datetime
 DB_FILE = "ttu_security_hardened_v11.db"
 
 def get_db_connection():
-    """Crée une connexion sécurisée avec timeout pour éviter les verrous."""
     conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
@@ -20,24 +19,19 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    # Table des attaquants avec contraintes
     c.execute('''CREATE TABLE IF NOT EXISTS attackers 
                  (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER DEFAULT 0, 
                   last_seen TEXT, total_kmass REAL DEFAULT 0.0)''')
-    # Table des logs (Audit Trail)
     c.execute('''CREATE TABLE IF NOT EXISTS audit_logs 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, ip TEXT, 
                   pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)''')
     conn.commit()
     return conn
 
-# Initialisation
 if 'db' not in st.session_state:
     st.session_state.db = init_db()
 
-# --- UTILITAIRES DE SÉCURITÉ ---
 def get_visitor_ip():
-    """Récupération d'IP robuste"""
     from streamlit.web.server.websocket_headers import _get_websocket_headers
     headers = _get_websocket_headers()
     if headers:
@@ -47,8 +41,6 @@ def get_visitor_ip():
 user_ip = get_visitor_ip()
 
 class SecurityEngine:
-    """Moteur de détection hybride Signature + Statistique"""
-    
     @staticmethod
     def is_banned(ip):
         c = st.session_state.db.cursor()
@@ -63,10 +55,10 @@ class SecurityEngine:
     @staticmethod
     def detect_signatures(payload):
         patterns = [
-            r"(;|--|union|select|drop|insert|delete|update)", # SQL
-            r"(<script|alert\(|onerror=)",                   # XSS
-            r"(\:|\||\&|\{|\})",                             # Fork Bombs
-            r"(\.\./|\/etc\/passwd|\/windows\/win\.ini)"      # Path Traversal
+            r"(;|--|union|select|drop|insert|delete|update)", 
+            r"(<script|alert\(|onerror=)",                   
+            r"(\:|\||\&|\{|\})",                             
+            r"(\.\./|\/etc\/passwd|\/windows\/win\.ini)"      
         ]
         hits = 0
         for p in patterns:
@@ -102,7 +94,6 @@ class SecurityEngine:
         conn.commit()
         return k_mass, ctx, status
 
-# --- MODULE HONEY POT (LE PIÈGE) ---
 def render_honeypot():
     st.sidebar.divider()
     with st.sidebar.expander("🛠️ ZONE DEBUG (ACCÈS RESTREINT)"):
@@ -114,25 +105,21 @@ def render_honeypot():
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn = st.session_state.db
             c = conn.cursor()
-            
-            # Sanction immédiate et lourde pour tentative d'intrusion délibérée
             c.execute("""INSERT INTO attackers (ip, pseudo, depth, last_seen, total_kmass) 
                          VALUES (?, ?, 5, ?, 50.0) 
                          ON CONFLICT(ip) DO UPDATE SET 
                          depth = depth + 5, last_seen = ?, total_kmass = total_kmass + 50.0""",
                       (user_ip, st.session_state.user_pseudo, ts, ts))
-            
             c.execute("""INSERT INTO audit_logs (timestamp, ip, pseudo, context, kmass, status, payload) 
                          VALUES (?, ?, ?, 'HONEYPOT_TRAP', 99.9, 'BANNED', ?)""",
                       (ts, user_ip, st.session_state.user_pseudo, f"Tentative d'accès Admin : {fake_user}"))
             conn.commit()
-            
-            st.error("DÉTECTION INTRUSION : Signalement envoyé au centre de contrôle.")
+            st.error("DÉTECTION INTRUSION : Signalement envoyé.")
             time.sleep(1)
             st.rerun()
 
-# --- INTERFACE UTILISATEUR ---
-st.set_page_config(page_title="TTU BASTION V11.1", layout="wide")
+# --- CONFIG PAGE ---
+st.set_page_config(page_title="TTU BASTION V11.2", layout="wide")
 
 if 'user_pseudo' not in st.session_state:
     st.title("🔐 ACCÈS BASTION TTU-MC3")
@@ -143,44 +130,58 @@ if 'user_pseudo' not in st.session_state:
             st.rerun()
     st.stop()
 
-# Vérification du bannissement
+# --- LOGIQUE DE BANNISSEMENT AVEC COOLDOWN ---
 current_depth = SecurityEngine.is_banned(user_ip)
 
 if current_depth > 0:
     st.error(f"🚨 ACCÈS BLOQUÉ - NIVEAU DE MENACE {current_depth}")
-    st.warning(f"L'IP {user_ip} a été isolée. Signature suspecte enregistrée.")
     
-    testimony = st.text_area("Formulez une demande de rémission (30 car. min) :")
-    if st.button("TRANSMETTRE"):
+    # Calcul du Cooldown : 30 secondes par point de depth
+    cooldown_target = current_depth * 30
+    st.warning(f"Protocole de stabilisation actif. Attente requise : {cooldown_target} secondes.")
+    
+    
+
+    testimony = st.text_area("Rédigez votre plaidoyer de rémission (30 car. min) :", height=150)
+    
+    # Le bouton ne s'active qu'après simulation du temps d'attente
+    if st.button("🤝 SOUMETTRE LA RÉMISSION"):
         if len(testimony) >= 30:
-            c = st.session_state.db.cursor()
-            c.execute("UPDATE attackers SET depth = MAX(0, depth - 1) WHERE ip = ?", (user_ip,))
-            st.session_state.db.commit()
-            st.success("Analyse du plaidoyer... Réduction de la menace accordée.")
-            time.sleep(1.5)
-            st.rerun()
+            with st.spinner(f"Analyse cryptographique en cours... Veuillez patienter {cooldown_target}s"):
+                # Simulation du Cooldown (bloque l'UI pour décourager l'attaquant)
+                # Note: sleep(cooldown_target) peut être long, on peut simuler une barre de progression
+                progress_bar = st.progress(0)
+                for i in range(100):
+                    time.sleep(cooldown_target / 100)
+                    progress_bar.progress(i + 1)
+                
+                c = st.session_state.db.cursor()
+                c.execute("UPDATE attackers SET depth = MAX(0, depth - 1) WHERE ip = ?", (user_ip,))
+                st.session_state.db.commit()
+                st.success("Rémission accordée. Niveau de menace réduit.")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.error("Plaidoyer insuffisant pour une purge entropique.")
     st.stop()
 
-# --- DASHBOARD PRINCIPAL ---
+# --- DASHBOARD ---
 st.title("🛡️ TERMINAL DE SÉCURITÉ TTU")
 st.sidebar.info(f"Opérateur : {st.session_state.user_pseudo}\n\nIP : {user_ip}")
-
-# Activation du Honey Pot
 render_honeypot()
 
 col1, col2 = st.columns([1, 1])
-
 with col1:
     st.subheader("📥 Analyse de Flux")
-    input_data = st.text_area("Entrez le vecteur à tester :", height=200)
+    input_data = st.text_area("Vecteur à tester :", height=200)
     if st.button("LANCER L'AUDIT"):
         k, ctx, stat = SecurityEngine.analyze_flux(input_data, user_ip, st.session_state.user_pseudo)
         if stat == "CRITICAL":
-            st.error(f"ALERTE : Signature malveillante détectée (K-Mass: {k})")
+            st.error(f"ALERTE : Menace détectée (K-Mass: {k})")
             time.sleep(1)
             st.rerun()
         else:
-            st.success(f"Flux validé : {ctx} (K-Mass: {k})")
+            st.success(f"Flux stable : {ctx}")
 
 with col2:
     st.subheader("📊 État du Réseau")
@@ -193,11 +194,7 @@ with col2:
         fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
 
-# --- SECTION ADMINISTRATIVE ---
 st.divider()
 if st.checkbox("Afficher les dossiers d'expertise"):
     df_logs = pd.read_sql_query("SELECT timestamp, pseudo, context, kmass, status, payload FROM audit_logs ORDER BY id DESC", st.session_state.db)
     st.dataframe(df_logs, use_container_width=True)
-    
-    csv = df_logs.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 EXPORTER LE RAPPORT LÉGAL", data=csv, file_name="audit_ttu_report.csv", mime="text/csv")
