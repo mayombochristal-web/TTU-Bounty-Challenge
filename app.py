@@ -4,233 +4,185 @@ import pandas as pd
 import plotly.graph_objects as go
 import sqlite3
 import time
+import re
+import html
 from datetime import datetime
-import os
-import socket
-from streamlit.web.server.websocket_headers import _get_websocket_headers
 
-# --- CONFIGURATION ET MOTEUR DE PERSISTANCE (DB DISQUE) ---
-DB_FILE = "ttu_security_bastion_v10.db"
+# --- CONFIGURATION SÉCURISÉE ---
+DB_FILE = "ttu_security_hardened_v11.db"
+
+def get_db_connection():
+    """Crée une connexion sécurisée avec timeout pour éviter les verrous."""
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    """Initialise la base de données SQLITE pour une persistance totale entre les sessions."""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = get_db_connection()
     c = conn.cursor()
-    # Table des acteurs (Bans et stats cumulées)
+    # Table des attaquants avec contraintes
     c.execute('''CREATE TABLE IF NOT EXISTS attackers 
-                 (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER, last_seen TEXT, total_kmass REAL)''')
-    # Table des logs d'audit (Historique d'expertise)
+                 (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER DEFAULT 0, 
+                  last_seen TEXT, total_kmass REAL DEFAULT 0.0)''')
+    # Table des logs (Audit Trail)
     c.execute('''CREATE TABLE IF NOT EXISTS audit_logs 
-                 (timestamp TEXT, ip TEXT, pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)''')
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, ip TEXT, 
+                  pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)''')
     conn.commit()
     return conn
 
-# Initialisation globale
-if 'db_conn' not in st.session_state:
-    st.session_state.db_conn = init_db()
-    if 'chart_data' not in st.session_state:
-        st.session_state.chart_data = []
+# Initialisation
+if 'db' not in st.session_state:
+    st.session_state.db = init_db()
 
-def get_conn():
-    return st.session_state.db_conn
-
-# --- SYSTÈME DE DÉTECTION D'IDENTITÉ RÉSEAU ---
+# --- UTILITAIRES DE SÉCURITÉ ---
 def get_visitor_ip():
-    """Détecte l'IP du terminal visiteur (distingue PC/Téléphone sur le réseau)."""
+    """Récupération d'IP plus robuste (Streamlit context)"""
+    from streamlit.web.server.websocket_headers import _get_websocket_headers
     headers = _get_websocket_headers()
     if headers:
-        # Tente de récupérer l'IP derrière un proxy ou l'IP directe
-        ip = headers.get("X-Forwarded-For")
-        if ip:
-            return ip.split(",")[0]
-        return headers.get("Host", "127.0.0.1").split(":")[0]
+        # On privilégie l'IP réelle sans faire confiance aveugle au Forwarded-For
+        return headers.get("X-Forwarded-For", headers.get("Host", "127.0.0.1")).split(",")[0]
     return "127.0.0.1"
 
 user_ip = get_visitor_ip()
 
-# --- UI CONFIG ---
-st.set_page_config(page_title="TTU-MC3 : Sécurité", page_icon="🏰", layout="wide")
 
-# --- INTERFACE D'IDENTIFICATION ---
-if 'user_pseudo' not in st.session_state:
-    st.markdown(f"""
-        <div style="background-color: #0d1117; border: 2px solid #00ff41; padding: 30px; border-radius: 15px; text-align: center;">
-            <h1 style='color: #00ff41;'>🔐 ACCÈS TTU-MC3 : SÉCURITÉ</h1>
-            <p style='color: #8b949e;'>Terminal identifié : <span style="color:white;">{user_ip}</span></p>
-            <p style='color: #58a6ff;'>Initialisation du protocole de défense v10.5</p>
-        </div>
-    """, unsafe_allow_html=True)
+
+class SecurityEngine:
+    """Moteur de détection hybride Signature + Statistique"""
     
-    pseudo = st.text_input("SIGNATURE DE L'OPÉRATEUR :", key="init_pseudo", placeholder="Entrez votre pseudo...")
-    if st.button("ACTIVER LA SESSION"):
-        if len(pseudo) >= 2:
-            st.session_state.user_pseudo = pseudo
-            st.rerun()
-        else:
-            st.error("Pseudo requis (minimum 2 caractères).")
-    st.stop()
-
-# --- CLASSE SENTINEL ADAPTATIVE ---
-class AbsoluteSentinel:
-    def __init__(self, ip, pseudo):
-        self.ip = ip
-        self.pseudo = pseudo
-        self.depth, self.total_k = self.load_status()
-
-    def load_status(self):
-        c = get_conn().cursor()
-        c.execute("SELECT depth, total_kmass FROM attackers WHERE ip=?", (self.ip,))
+    @staticmethod
+    def is_banned(ip):
+        c = st.session_state.db.cursor()
+        c.execute("SELECT depth FROM attackers WHERE ip = ?", (ip,))
         res = c.fetchone()
-        return (res[0], res[1]) if res else (0, 0.0)
+        return res['depth'] if res else 0
 
-    def log_and_update(self, ctx, k, status, payload, depth_up=0):
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn = get_conn()
+    @staticmethod
+    def sanitize(text):
+        """Nettoie le texte pour l'affichage (Anti-XSS)"""
+        return html.escape(text)
+
+    @staticmethod
+    def detect_signatures(payload):
+        """Détection par motifs (RegEx) - La première ligne de défense"""
+        patterns = [
+            r"(;|--|union|select|drop|insert|delete|update)", # SQL
+            r"(<script|alert\(|onerror=)",                   # XSS
+            r"(\:|\||\&|\{|\})",                             # Fork Bombs / Bash
+            r"(\.\./|\/etc\/passwd|\/windows\/win\.ini)"      # Path Traversal
+        ]
+        hits = 0
+        for p in patterns:
+            if re.search(p, payload, re.IGNORECASE):
+                hits += 1
+        return hits
+
+    @staticmethod
+    def analyze_flux(payload, ip, pseudo):
+        if not payload: return 0.0, "VOID", "STABLE"
+        
+        # 1. Analyse Signature
+        sig_hits = SecurityEngine.detect_signatures(payload)
+        
+        # 2. Analyse K-Mass (Statistique)
+        symbols = sum(1 for c in payload if c in ";|&<>$'\"\\{}[]()_=")
+        # On compense la dilution : le diviseur log est plafonné
+        length_factor = np.log1p(len(payload)) if len(payload) < 500 else np.log1p(500)
+        k_mass = (symbols * 1.5 + (sig_hits * 10.0)) / length_factor
+        k_mass = round(float(k_mass), 2)
+        
+        # 3. Décision
+        status = "CRITICAL" if (k_mass > 2.0 or sig_hits > 0) else "STABLE"
+        ctx = "CODE/INJECTION" if sig_hits > 0 else "TEXT/PROSE"
+        
+        # 4. Persistance Atomique
+        conn = st.session_state.db
         c = conn.cursor()
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Enregistrement log
-        c.execute("INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                  (ts, self.ip, self.pseudo, ctx, k, status, payload[:200]))
+        # Log l'audit
+        c.execute("INSERT INTO audit_logs (timestamp, ip, pseudo, context, kmass, status, payload) VALUES (?,?,?,?,?,?,?)",
+                  (ts, ip, pseudo, ctx, k_mass, status, payload[:500]))
         
-        st.session_state.chart_data.append(k)
-        
-        # Mise à jour persistante
-        new_depth = self.depth + depth_up
-        new_total_k = self.total_k + k
-        c.execute("INSERT OR REPLACE INTO attackers VALUES (?, ?, ?, ?, ?)", 
-                  (self.ip, self.pseudo, new_depth, ts, new_total_k))
+        # Update Attacker
+        if status == "CRITICAL":
+            c.execute("""INSERT INTO attackers (ip, pseudo, depth, last_seen, total_kmass) 
+                         VALUES (?, ?, 1, ?, ?) 
+                         ON CONFLICT(ip) DO UPDATE SET 
+                         depth = depth + 1, last_seen = ?, total_kmass = total_kmass + ?""",
+                      (ip, pseudo, ts, k_mass, ts, k_mass))
         conn.commit()
-
-    def analyze_frequency(self, text):
-        if len(text) < 2: return 1.0
-        chars = pd.Series(list(text)).value_counts(normalize=True)
-        zipf_ideal = np.array([1/i for i in range(1, len(chars)+1)])
-        zipf_ideal /= zipf_ideal.sum()
-        return np.linalg.norm(chars.values - zipf_ideal) + 0.1
-
-    def process_flux(self, payload):
-        if not payload: return 0.0, "NONE", "STABLE"
-        sql_keywords = ["SELECT", "DROP", "UNION", "DELETE", "INSERT", "UPDATE", "TABLE", "WHERE", "FROM", "SCRIPT", "ALERT", "OR 1=1"]
-        has_sql = any(k in payload.upper() for k in sql_keywords)
-        has_symbols = any(c in ";()[]{}<>" for c in payload)
         
-        ctx = "CODE/INJECTION" if (has_sql or has_symbols) else "HUMAN_PROSE"
-        sens = (8.0 + (self.depth * 3.0)) if ctx == "CODE/INJECTION" else 0.4 
-
-        symbols_count = sum(60.0 if c in ";|&<>$'\"\\{}[]()_=" else 0.5 for c in payload)
-        zipf_score = self.analyze_frequency(payload)
-        
-        k_mass = (symbols_count * zipf_score * sens) / np.log1p(len(payload))
-        k_mass = round(float(k_mass), 4)
-        
-        status = "CRITICAL" if (k_mass > 1.1 or (has_sql and k_mass > 0.4)) else "STABLE"
-        self.log_and_update(ctx, k_mass, status, payload, depth_up=(1 if status == "CRITICAL" else 0))
         return k_mass, ctx, status
 
-sentinel = AbsoluteSentinel(ip=user_ip, pseudo=st.session_state.user_pseudo)
+# --- INTERFACE UTILISATEUR ---
+st.set_page_config(page_title="TTU BASTION V11", layout="wide")
 
-# --- ZONE : LE LABYRINTHE (BANNISSEMENT) ---
-if sentinel.depth > 0:
-    st.markdown(f"<h1 style='color: #ff4b4b; text-align: center;'>🌀 LABYRINTHE NIVEAU {sentinel.depth}</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: grey;'>Accès restreint pour <b>{st.session_state.user_pseudo}</b>. Signature entropique instable détectée sur {user_ip}.</p>", unsafe_allow_html=True)
-    
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.subheader("💀 Négociation de sortie")
-        
-        # Générateur de plaidoyer contextuel
-        suggested = {
-            1: "Je reconnais avoir testé les limites du système TTU-MC3 indûment.",
-            2: "Ma signature entropique a généré une alerte critique. Je sollicite une purge.",
-            3: "Tentative d'assaut avortée. Je me soumets au protocole de stabilisation."
-        }.get(min(sentinel.depth, 3))
-            
-        st.caption("💡 Plaidoyer suggéré (Copiez-collez pour rémission) :")
-        st.code(suggested, language="text")
-        
-        testimony = st.text_area("Rédigez votre plaidoyer (Min. 30 caractères) :", height=100)
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🤝 SOUMETTRE"):
-                if len(testimony) >= 30:
-                    c = get_conn().cursor()
-                    new_depth = max(0, sentinel.depth - 1)
-                    c.execute("UPDATE attackers SET depth=? WHERE ip=?", (new_depth, user_ip))
-                    get_conn().commit()
-                    st.success("Rémission accordée. Stabilisation en cours...")
-                    time.sleep(1.5)
-                    st.rerun()
-                else:
-                    st.error("Plaidoyer trop court.")
-        with c2:
-            if st.button("🔥 FORCER L'ASSAUT"):
-                st.session_state.force_assault = True
-
-        if st.session_state.get('force_assault'):
-            p = st.text_area("Injection abyssale (Echec = Ban +2) :", placeholder="DROP TABLE...")
-            if st.button("LANCER L'ATTAQUE"):
-                sentinel.process_flux(p)
-                st.session_state.force_assault = False
-                st.rerun()
-                
-    with col_r:
-        st.subheader("📉 Signature d'Intrusion")
-        st.metric("MENACE CUMULÉE", f"{round(sentinel.total_k, 2)} K-Mass")
-        if st.session_state.chart_data:
-            fig_err = go.Figure(go.Scatter(y=st.session_state.chart_data, line=dict(color='#ff4b4b', width=4, dash='dot')))
-            fig_err.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#ff4b4b"), height=300)
-            st.plotly_chart(fig_err, use_container_width=True)
+if 'user_pseudo' not in st.session_state:
+    st.title("🔐 ACCÈS BASTION TTU-MC3")
+    p = st.text_input("Identifiant Opérateur :")
+    if st.button("ÉTABLIR LA CONNEXION"):
+        if p: 
+            st.session_state.user_pseudo = SecurityEngine.sanitize(p)
+            st.rerun()
     st.stop()
 
-# --- ZONE : LA SURFACE (APPLICATION) ---
-st.title("🛡️ TTU-MC3 : SÉCURITÉ")
-st.markdown("---")
+# Vérification du bannissement en TEMPS RÉEL (SQL source of truth)
+current_depth = SecurityEngine.is_banned(user_ip)
 
-# Métriques de Session
-m1, m2, m3 = st.columns(3)
-m1.metric("OPÉRATEUR", st.session_state.user_pseudo)
-m2.metric("ADRESSE IP DÉTECTÉE", user_ip)
-m3.metric("ABYSS DEPTH", sentinel.depth)
+if current_depth > 0:
+    st.error(f"🚨 ACCÈS BLOQUÉ - NIVEAU DE MENACE {current_depth}")
+    st.warning(f"L'IP {user_ip} a été isolée suite à une détection critique.")
+    
+    testimony = st.text_area("Formulez une demande de rémission (30 car. min) :")
+    if st.button("TRANSMETTRE"):
+        if len(testimony) >= 30:
+            c = st.session_state.db.cursor()
+            c.execute("UPDATE attackers SET depth = MAX(0, depth - 1) WHERE ip = ?", (user_ip,))
+            st.session_state.db.commit()
+            st.success("Analyse du plaidoyer... Réduction de la menace accordée.")
+            time.sleep(2)
+            st.rerun()
+    st.stop()
 
-st.divider()
+# --- DASHBOARD PRINCIPAL ---
+st.title("🛡️ TERMINAL DE SÉCURITÉ TTU")
+st.sidebar.info(f"Opérateur : {st.session_state.user_pseudo}\n\nIP : {user_ip}")
 
-col_in, col_viz = st.columns([1, 1.2])
+col1, col2 = st.columns([1, 1])
 
-with col_in:
-    st.subheader("⌨️ Audit de Flux")
-    payload = st.text_area("Entrez le vecteur à analyser (Code ou Texte)...", height=150)
-    if st.button("ANALYSER LE FLUX"):
-        k, ctx, stat = sentinel.process_flux(payload)
+with col1:
+    st.subheader("📥 Analyse de Flux")
+    input_data = st.text_area("Entrez le vecteur à tester :", height=200)
+    if st.button("LANCER L'AUDIT"):
+        k, ctx, stat = SecurityEngine.analyze_flux(input_data, user_ip, st.session_state.user_pseudo)
         if stat == "CRITICAL":
-            st.error(f"☢️ ALERTE CRITIQUE : K-Mass {k}")
+            st.error(f"ALERTE : Signature malveillante détectée (K-Mass: {k})")
             time.sleep(1)
             st.rerun()
         else:
-            st.success(f"✔️ FLUX STABLE : K-Mass {k} ({ctx})")
+            st.success(f"Flux validé : {ctx} (K-Mass: {k})")
 
-with col_viz:
-    st.subheader("🔮 Topologie Entropique")
-    if st.session_state.chart_data:
-        fig = go.Figure(go.Scatter(y=st.session_state.chart_data, mode='lines+markers', line=dict(color='#00ff41', width=3)))
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#00ff41"), height=300)
+with col2:
+    st.subheader("📊 État du Réseau")
+    c = st.session_state.db.cursor()
+    c.execute("SELECT timestamp, kmass FROM audit_logs WHERE ip = ? ORDER BY id DESC LIMIT 20", (user_ip,))
+    history = c.fetchall()
+    if history:
+        df_hist = pd.DataFrame(history, columns=['Time', 'K-Mass'])
+        fig = go.Figure(go.Scatter(x=df_hist['Time'], y=df_hist['K-Mass'], mode='lines+markers', line=dict(color='#00ff41')))
+        fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("En attente de données pour générer la topologie...")
 
-# --- ZONE : DOSSIER D'EXPERTISE (HISTORIQUE) ---
+
+
+# --- SECTION ADMINISTRATIVE ---
 st.divider()
-st.subheader("📊 Dossier d'Expertise Détaillé")
-if st.button("GÉNÉRER LE RAPPORT (HISTORIQUE PERMANENT)"):
-    # Récupération de tous les logs depuis SQLite
-    df = pd.read_sql_query("SELECT * FROM audit_logs ORDER BY timestamp DESC", get_conn())
-    st.dataframe(df, use_container_width=True)
+if st.checkbox("Afficher les dossiers d'expertise"):
+    df_logs = pd.read_sql_query("SELECT timestamp, pseudo, context, kmass, status, payload FROM audit_logs ORDER BY id DESC", st.session_state.db)
+    st.dataframe(df_logs, use_container_width=True)
     
-    # Export CSV
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 TÉLÉCHARGER LE DOSSIER (.CSV)",
-        data=csv,
-        file_name=f"Expertise_TTU_{st.session_state.user_pseudo}_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
+    csv = df_logs.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 EXPORTER LE RAPPORT LÉGAL", data=csv, file_name="audit_ttu_report.csv", mime="text/csv")
