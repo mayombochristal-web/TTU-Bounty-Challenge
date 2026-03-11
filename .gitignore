@@ -1,8 +1,0 @@
-# Environnement
-.env
-venv/
-__pycache__/
-*.pyc
-# Données sensibles
-*.db
-.DS_Store
