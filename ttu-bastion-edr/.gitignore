@@ -3,6 +3,24 @@
 venv/
 __pycache__/
 *.pyc
-# Données sensibles
+*.pyo
+*.pyd
+.Python
+
+# Base de données
 *.db
-.DS_Store
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Supabase
+supabase/.temp
