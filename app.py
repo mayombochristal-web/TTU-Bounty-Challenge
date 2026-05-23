@@ -9,7 +9,6 @@ import html
 import hashlib
 import json
 from datetime import datetime
-from streamlit.web.server.websocket_headers import _get_websocket_headers
 
 # ============================================================================
 # CONFIGURATION DE LA BASE DE DONNÉES
@@ -24,7 +23,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    # Participants / attaquants
     c.execute('''CREATE TABLE IF NOT EXISTS hunters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         pseudo TEXT UNIQUE,
@@ -32,7 +30,6 @@ def init_db():
         total_points INTEGER DEFAULT 0,
         registered_at TEXT
     )''')
-    # Soumissions de preuves
     c.execute('''CREATE TABLE IF NOT EXISTS submissions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         hunter_id INTEGER,
@@ -45,7 +42,6 @@ def init_db():
         reviewed_at TEXT,
         FOREIGN KEY(hunter_id) REFERENCES hunters(id)
     )''')
-    # Logs des tentatives (détections automatiques)
     c.execute('''CREATE TABLE IF NOT EXISTS attack_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ip TEXT,
@@ -55,7 +51,6 @@ def init_db():
         status TEXT,
         timestamp TEXT
     )''')
-    # Leaderboard cache
     c.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
         pseudo TEXT PRIMARY KEY,
         total_points INTEGER
@@ -70,10 +65,19 @@ if 'db' not in st.session_state:
 # UTILITAIRES
 # ============================================================================
 def get_visitor_ip():
-    headers = _get_websocket_headers()
-    if headers:
-        return headers.get("X-Forwarded-For", headers.get("Host", "127.0.0.1")).split(",")[0]
-    return "127.0.0.1"
+    """Récupère l'adresse IP du visiteur (compatible Streamlit Cloud)."""
+    try:
+        headers = st.context.headers
+        if headers:
+            if "CF-Connecting-IP" in headers:
+                return headers["CF-Connecting-IP"]
+            if "X-Forwarded-For" in headers:
+                return headers["X-Forwarded-For"].split(",")[0]
+            if "Remote-Addr" in headers:
+                return headers["Remote-Addr"]
+        return "127.0.0.1"
+    except AttributeError:
+        return "127.0.0.1"
 
 def hash_pseudo(pseudo):
     return hashlib.sha256(pseudo.encode()).hexdigest()[:8]
@@ -228,14 +232,12 @@ with col_left:
             if not description or not proof:
                 st.error("Veuillez remplir tous les champs.")
             else:
-                # Validation automatique (simulation – en réalité un admin vérifierait)
-                chal = CHALLENGES[challenge_level]
-                # On extrait le payload de la description (simplifié)
+                # Extraction simple du payload depuis la description
                 payload_match = re.search(r"payload[ :]*['\"](.*?)['\"]", description, re.IGNORECASE)
                 payload = payload_match.group(1) if payload_match else description
+                chal = CHALLENGES[challenge_level]
                 if chal["validation"](payload):
                     points = chal["points"]
-                    # Mise à jour des points
                     c = conn.cursor()
                     c.execute("UPDATE hunters SET total_points = total_points + ? WHERE id = ?", (points, st.session_state.hunter_id))
                     c.execute("INSERT INTO submissions (hunter_id, challenge_level, description, proof, status, points_awarded, submitted_at) VALUES (?,?,?,?,?,?,?)",
@@ -245,7 +247,6 @@ with col_left:
                     st.balloons()
                 else:
                     st.error("❌ Preuve non conforme – la validation automatique a échoué. Vérifiez votre payload.")
-                    # Enregistrement comme rejetée
                     c = conn.cursor()
                     c.execute("INSERT INTO submissions (hunter_id, challenge_level, description, proof, status, points_awarded, submitted_at) VALUES (?,?,?,?,?,?,?)",
                               (st.session_state.hunter_id, challenge_level, description, proof, "rejected", 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
@@ -289,7 +290,6 @@ with st.sidebar.expander("🕳️ ZONE DEBUG (failles intentionnelles)"):
     st.caption("Cette zone contient une faille SQL intentionnelle. À vous de jouer...")
     fake_user = st.text_input("Admin ID :", placeholder="admin' --")
     if st.button("Connexion admin"):
-        # Piège : bannissement immédiat + enregistrement
         ip = get_visitor_ip()
         conn.execute("INSERT INTO attack_logs (ip, pseudo, payload, k_mass, status, timestamp) VALUES (?, ?, ?, 99.9, 'HONEYPOT_TRAP', ?)",
                      (ip, st.session_state.pseudo, fake_user, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
