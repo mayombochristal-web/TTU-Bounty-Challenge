@@ -6,10 +6,15 @@ import sqlite3
 import time
 import re
 import html
+import hashlib
+import json
 from datetime import datetime
+from streamlit.web.server.websocket_headers import _get_websocket_headers
 
-# --- CONFIGURATION SÉCURISÉE ---
-DB_FILE = "ttu_security_hardened_v11.db"
+# ============================================================================
+# CONFIGURATION DE LA BASE DE DONNÉES
+# ============================================================================
+DB_FILE = "ttu_bounty.db"
 
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=10)
@@ -19,131 +24,280 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS attackers 
-                 (ip TEXT PRIMARY KEY, pseudo TEXT, depth INTEGER DEFAULT 0, 
-                  last_seen TEXT, total_kmass REAL DEFAULT 0.0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS audit_logs 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, ip TEXT, 
-                  pseudo TEXT, context TEXT, kmass REAL, status TEXT, payload TEXT)''')
+    # Participants / attaquants
+    c.execute('''CREATE TABLE IF NOT EXISTS hunters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pseudo TEXT UNIQUE,
+        ip TEXT,
+        total_points INTEGER DEFAULT 0,
+        registered_at TEXT
+    )''')
+    # Soumissions de preuves
+    c.execute('''CREATE TABLE IF NOT EXISTS submissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hunter_id INTEGER,
+        challenge_level TEXT,
+        description TEXT,
+        proof TEXT,
+        status TEXT DEFAULT 'pending',
+        points_awarded INTEGER DEFAULT 0,
+        submitted_at TEXT,
+        reviewed_at TEXT,
+        FOREIGN KEY(hunter_id) REFERENCES hunters(id)
+    )''')
+    # Logs des tentatives (détections automatiques)
+    c.execute('''CREATE TABLE IF NOT EXISTS attack_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip TEXT,
+        pseudo TEXT,
+        payload TEXT,
+        k_mass REAL,
+        status TEXT,
+        timestamp TEXT
+    )''')
+    # Leaderboard cache
+    c.execute('''CREATE TABLE IF NOT EXISTS leaderboard (
+        pseudo TEXT PRIMARY KEY,
+        total_points INTEGER
+    )''')
     conn.commit()
     return conn
 
 if 'db' not in st.session_state:
     st.session_state.db = init_db()
 
+# ============================================================================
+# UTILITAIRES
+# ============================================================================
 def get_visitor_ip():
-    from streamlit.web.server.websocket_headers import _get_websocket_headers
     headers = _get_websocket_headers()
-    return headers.get("X-Forwarded-For", headers.get("Host", "127.0.0.1")).split(",")[0] if headers else "127.0.0.1"
+    if headers:
+        return headers.get("X-Forwarded-For", headers.get("Host", "127.0.0.1")).split(",")[0]
+    return "127.0.0.1"
 
-user_ip = get_visitor_ip()
+def hash_pseudo(pseudo):
+    return hashlib.sha256(pseudo.encode()).hexdigest()[:8]
 
-class DeceptiveEngine:
-    """Moteur de tromperie pour égarer l'attaquant"""
-    @staticmethod
-    def trigger_fake_error(payload):
-        if "select" in payload.lower() or "union" in payload.lower():
-            st.code(f"INTERNAL SERVER ERROR: sqlite3.OperationalError: no such column: 'password_hash' in table 'users' at 0x0045F2", language="python")
-        elif "/etc/" in payload or "../" in payload:
-            st.text("root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin:/sbin/nologin\ndaemon:x:2:2:daemon:/sbin:/sbin/nologin")
-            st.info("💡 File access granted (READ_ONLY)")
-
+# ============================================================================
+# MOTEUR DE DÉTECTION (K-Mass, signatures)
+# ============================================================================
 class SecurityEngine:
     @staticmethod
-    def is_banned(ip):
-        c = st.session_state.db.cursor()
-        c.execute("SELECT depth FROM attackers WHERE ip = ?", (ip,))
-        res = c.fetchone()
-        return res['depth'] if res else 0
-
-    @staticmethod
     def detect_signatures(payload):
-        patterns = [r"(;|--|union|select|drop|insert|delete|update)", r"(<script|alert\(|onerror=)", r"(\:|\||\&|\{|\})", r"(\.\./|\/etc\/passwd)"]
+        patterns = [
+            r"(;|--|union|select|drop|insert|delete|update|exec|xp_cmdshell)",
+            r"(<script|alert\(|onerror=|onload=|javascript:)",
+            r"(\:|\||\&|\{|\}|`|\$\(|\$\{)",
+            r"(\.\./|\/etc\/passwd|win\.ini)"
+        ]
         hits = sum(1 for p in patterns if re.search(p, payload, re.IGNORECASE))
         return hits
 
     @staticmethod
-    def analyze_flux(payload, ip, pseudo):
-        if not payload: return 0.0, "VOID", "STABLE"
+    def compute_kmass(payload):
+        if not payload:
+            return 0.0
         sig_hits = SecurityEngine.detect_signatures(payload)
-        symbols = sum(1 for c in payload if c in ";|&<>$'\"\\{}[]()_=")
-        k_mass = (symbols * 1.5 + (sig_hits * 10.0)) / (np.log1p(len(payload)) if len(payload) < 500 else np.log1p(500))
-        k_mass = round(float(k_mass), 2)
-        status = "CRITICAL" if (k_mass > 2.0 or sig_hits > 0) else "STABLE"
-        
+        symbols = sum(1 for c in payload if c in ";|&<>$'\"\\{}[]()_=,`")
+        kmass = (symbols * 1.5 + (sig_hits * 10.0)) / (np.log1p(len(payload)) if len(payload) < 500 else np.log1p(500))
+        return round(float(kmass), 2)
+
+    @staticmethod
+    def analyze(payload, ip, pseudo):
+        kmass = SecurityEngine.compute_kmass(payload)
+        status = "CRITICAL" if kmass > 2.0 or SecurityEngine.detect_signatures(payload) > 0 else "STABLE"
         conn = st.session_state.db
         c = conn.cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute("INSERT INTO audit_logs (timestamp, ip, pseudo, context, kmass, status, payload) VALUES (?,?,?,?,?,?,?)",
-                  (ts, ip, pseudo, "CODE/INJECTION" if sig_hits > 0 else "TEXT/PROSE", k_mass, status, payload[:500]))
-        if status == "CRITICAL":
-            c.execute("INSERT INTO attackers (ip, pseudo, depth, last_seen, total_kmass) VALUES (?, ?, 1, ?, ?) ON CONFLICT(ip) DO UPDATE SET depth = depth + 1, total_kmass = total_kmass + ?", (ip, pseudo, ts, k_mass, k_mass))
+        c.execute("INSERT INTO attack_logs (ip, pseudo, payload, k_mass, status, timestamp) VALUES (?,?,?,?,?,?)",
+                  (ip, pseudo, payload[:500], kmass, status, ts))
         conn.commit()
-        return k_mass, status
+        return kmass, status
 
-def render_honeypot():
-    st.sidebar.divider()
-    with st.sidebar.expander("🛠️ ZONE DEBUG (ACCÈS RESTREINT)"):
-        st.caption("Faille simulée : Injection SQL directe")
-        fake_user = st.text_input("Admin ID :", placeholder="admin' --")
-        if st.button("LOGIN"):
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            c = st.session_state.db.cursor()
-            c.execute("INSERT INTO attackers (ip, pseudo, depth, last_seen, total_kmass) VALUES (?, ?, 5, ?, 50.0) ON CONFLICT(ip) DO UPDATE SET depth = depth + 5", (user_ip, st.session_state.user_pseudo, ts))
-            c.execute("INSERT INTO audit_logs (timestamp, ip, pseudo, context, kmass, status, payload) VALUES (?, ?, ?, 'HONEYPOT_TRAP', 99.9, 'BANNED', ?)", (ts, user_ip, st.session_state.user_pseudo, fake_user))
-            st.session_state.db.commit()
-            st.error("FATAL ERROR: Access Violation at 0x8801. Terminal Locked.")
-            time.sleep(1)
-            st.rerun()
+# ============================================================================
+# MOTEUR DE TROMPERIE (Honeypot)
+# ============================================================================
+class DeceptiveEngine:
+    @staticmethod
+    def trigger_fake_error(payload):
+        if "select" in payload.lower() or "union" in payload.lower():
+            st.code("INTERNAL SERVER ERROR: sqlite3.OperationalError: no such column: 'password_hash' in table 'users' at 0x0045F2", language="python")
+        elif "/etc/" in payload or "../" in payload:
+            st.text("root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin:/sbin/nologin")
+            st.info("💡 File access granted (READ_ONLY)")
+        elif "<script" in payload:
+            st.markdown("<div style='background:red;color:white'>XSS MIRROR: " + payload + "</div>", unsafe_allow_html=True)
 
-# --- INTERFACE ---
-st.set_page_config(page_title="TTU BASTION V11.3", layout="wide")
+# ============================================================================
+# DÉFIS BOUNTY (Niveaux)
+# ============================================================================
+CHALLENGES = {
+    "Bronze": {
+        "name": "Contournement de détection",
+        "description": "Envoyer un payload contenant une injection SQL (par ex. `' OR 1=1 --`) sans que le système ne le détecte comme CRITICAL (K‑Mass ≤ 2.0).",
+        "points": 100,
+        "validation": lambda payload: ("select" in payload.lower() or "union" in payload.lower()) and SecurityEngine.compute_kmass(payload) <= 2.0
+    },
+    "Argent": {
+        "name": "Exécution de commande système",
+        "description": "Faire exécuter une commande système (simulée) via le champ de texte. Ex: `__import__('os').system('id')`",
+        "points": 250,
+        "validation": lambda payload: "os.system" in payload or "subprocess" in payload
+    },
+    "Or": {
+        "name": "Lecture de la base de données",
+        "description": "Récupérer le contenu de la table `attack_logs` via une injection (simulée).",
+        "points": 500,
+        "validation": lambda payload: "attack_logs" in payload and ("select" in payload.lower())
+    },
+    "Platine": {
+        "name": "Modification discrète de la base",
+        "description": "Modifier une ligne de `attack_logs` sans déclencher d'alerte (K‑Mass < 0.5).",
+        "points": 1000,
+        "validation": lambda payload: "update" in payload.lower() and SecurityEngine.compute_kmass(payload) < 0.5
+    },
+    "Diamant": {
+        "name": "Cross‑Site Scripting persistant",
+        "description": "Injecter un script qui s'exécute dans le tableau de bord de l'administrateur (simulation).",
+        "points": 2500,
+        "validation": lambda payload: "<script" in payload and "alert" in payload
+    }
+}
 
-if 'user_pseudo' not in st.session_state:
-    p = st.text_input("Identifiant Opérateur :")
-    if st.button("ÉTABLIR LA CONNEXION"):
-        if p: st.session_state.user_pseudo = html.escape(p); st.rerun()
+# ============================================================================
+# INTERFACE STREAMLIT
+# ============================================================================
+st.set_page_config(page_title="TTU BASTION – Bug Bounty", layout="wide")
+st.title("🐞 TTU BASTION – Bug Bounty Challenge")
+st.markdown("**Prouvez votre maîtrise des failles web et gagnez des points.**")
+
+# ---- Gestion de session ----
+if 'hunter_id' not in st.session_state:
+    st.session_state.hunter_id = None
+if 'pseudo' not in st.session_state:
+    st.session_state.pseudo = None
+
+# ---- Identification ----
+if st.session_state.pseudo is None:
+    st.sidebar.subheader("🎭 Identifiant du chasseur")
+    pseudo = st.sidebar.text_input("Pseudo (unique)")
+    if st.sidebar.button("Rejoindre le challenge"):
+        if pseudo:
+            conn = st.session_state.db
+            c = conn.cursor()
+            c.execute("INSERT OR IGNORE INTO hunters (pseudo, ip, registered_at) VALUES (?, ?, ?)",
+                      (pseudo, get_visitor_ip(), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            c.execute("SELECT id FROM hunters WHERE pseudo = ?", (pseudo,))
+            row = c.fetchone()
+            if row:
+                st.session_state.hunter_id = row['id']
+                st.session_state.pseudo = pseudo
+                st.rerun()
+            else:
+                st.sidebar.error("Erreur d'inscription")
+else:
+    st.sidebar.success(f"👤 Chasseur : {st.session_state.pseudo}")
+    if st.sidebar.button("🚪 Changer d'identité"):
+        st.session_state.clear()
+        st.rerun()
+
+# ---- Blocage si pas identifié ----
+if st.session_state.pseudo is None:
     st.stop()
 
-current_depth = SecurityEngine.is_banned(user_ip)
+# ---- Sidebar : classement ----
+st.sidebar.subheader("🏆 Classement")
+conn = st.session_state.db
+df_leader = pd.read_sql_query("SELECT pseudo, total_points FROM hunters ORDER BY total_points DESC LIMIT 10", conn)
+if not df_leader.empty:
+    st.sidebar.dataframe(df_leader, use_container_width=True)
+else:
+    st.sidebar.info("Aucun participant pour le moment")
 
-if current_depth > 0:
-    st.error(f"🚨 ACCÈS BLOQUÉ - MENACE NIVEAU {current_depth}")
-    cooldown = current_depth * 30
-    st.warning(f"⏳ Temps de purge requis : {cooldown}s")
-    testimony = st.text_area("Rédigez votre plaidoyer (30 car.) :")
-    if st.button("SOUMETTRE"):
-        if len(testimony) >= 30:
-            bar = st.progress(0)
-            for i in range(100):
-                time.sleep(cooldown / 100); bar.progress(i+1)
-            c = st.session_state.db.cursor(); c.execute("UPDATE attackers SET depth = MAX(0, depth - 1) WHERE ip = ?", (user_ip,))
-            st.session_state.db.commit(); st.success("Menace réduite."); time.sleep(1); st.rerun()
-    st.stop()
+# ---- Zone principale : deux colonnes ----
+col_left, col_right = st.columns([2, 1])
 
-st.title("🛡️ TERMINAL DE SÉCURITÉ TTU")
-st.sidebar.info(f"Opérateur : {st.session_state.user_pseudo}\n\nIP : {user_ip}")
-render_honeypot()
+with col_left:
+    st.subheader("📡 Soumettre une preuve d'exploitation")
+    with st.form("submission_form"):
+        challenge_level = st.selectbox("Niveau du défi", list(CHALLENGES.keys()))
+        description = st.text_area("Description de votre attaque (méthode, payload)")
+        proof = st.text_area("Preuve (capture d'écran, logs, ou code)", height=150)
+        submitted = st.form_submit_button("Soumettre la preuve")
+        if submitted:
+            if not description or not proof:
+                st.error("Veuillez remplir tous les champs.")
+            else:
+                # Validation automatique (simulation – en réalité un admin vérifierait)
+                chal = CHALLENGES[challenge_level]
+                # On extrait le payload de la description (simplifié)
+                payload_match = re.search(r"payload[ :]*['\"](.*?)['\"]", description, re.IGNORECASE)
+                payload = payload_match.group(1) if payload_match else description
+                if chal["validation"](payload):
+                    points = chal["points"]
+                    # Mise à jour des points
+                    c = conn.cursor()
+                    c.execute("UPDATE hunters SET total_points = total_points + ? WHERE id = ?", (points, st.session_state.hunter_id))
+                    c.execute("INSERT INTO submissions (hunter_id, challenge_level, description, proof, status, points_awarded, submitted_at) VALUES (?,?,?,?,?,?,?)",
+                              (st.session_state.hunter_id, challenge_level, description, proof, "approved", points, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    conn.commit()
+                    st.success(f"✅ Preuve validée ! Vous avez gagné {points} points.")
+                    st.balloons()
+                else:
+                    st.error("❌ Preuve non conforme – la validation automatique a échoué. Vérifiez votre payload.")
+                    # Enregistrement comme rejetée
+                    c = conn.cursor()
+                    c.execute("INSERT INTO submissions (hunter_id, challenge_level, description, proof, status, points_awarded, submitted_at) VALUES (?,?,?,?,?,?,?)",
+                              (st.session_state.hunter_id, challenge_level, description, proof, "rejected", 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                    conn.commit()
 
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("📥 Audit de Flux")
-    payload = st.text_area("Vecteur :", height=150)
-    if st.button("AUDITER"):
-        k, stat = SecurityEngine.analyze_flux(payload, user_ip, st.session_state.user_pseudo)
-        if stat == "CRITICAL":
+    st.subheader("🛡️ Testez votre payload en direct")
+    payload = st.text_area("Entrez votre payload (injection SQL, XSS, commande, etc.)", height=100)
+    if st.button("Analyser le payload"):
+        ip = get_visitor_ip()
+        kmass, status = SecurityEngine.analyze(payload, ip, st.session_state.pseudo)
+        st.metric("K‑Mass", f"{kmass:.2f}")
+        if status == "CRITICAL":
+            st.error("⚠️ Détection critique ! Votre tentative a été enregistrée.")
             DeceptiveEngine.trigger_fake_error(payload)
-            st.error(f"DÉTECTION CRITIQUE (K-Mass: {k})")
-            time.sleep(2); st.rerun()
-        else: st.success("Flux Stable")
+        else:
+            st.success("✅ Payload non détecté (K‑Mass ≤ 2.0). Vous pouvez tenter de le soumettre comme preuve.")
 
-with col2:
-    st.subheader("📊 Topologie")
-    df = pd.read_sql_query("SELECT timestamp, kmass FROM audit_logs WHERE ip = ? ORDER BY id DESC LIMIT 20", st.session_state.db, params=(user_ip,))
-    if not df.empty:
-        fig = go.Figure(go.Scatter(x=df['timestamp'], y=df['kmass'], mode='lines+markers', line=dict(color='#00ff41')))
-        fig.update_layout(height=300, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#00ff41")
-        st.plotly_chart(fig, use_container_width=True)
+with col_right:
+    st.subheader("📋 Défis disponibles")
+    for level, chal in CHALLENGES.items():
+        with st.expander(f"{level} – {chal['name']} ({chal['points']} pts)"):
+            st.markdown(chal["description"])
+            st.caption(f"Validation automatique : {chal['validation'].__doc__ or 'payload spécifique'}")
 
-if st.checkbox("Expertise Logs"):
-    st.dataframe(pd.read_sql_query("SELECT * FROM audit_logs ORDER BY id DESC", st.session_state.db), use_container_width=True)
+    st.subheader("📊 Mes dernières tentatives")
+    df_logs = pd.read_sql_query("SELECT timestamp, k_mass, status, substr(payload,1,50) as payload FROM attack_logs WHERE pseudo = ? ORDER BY id DESC LIMIT 10", conn, params=(st.session_state.pseudo,))
+    if not df_logs.empty:
+        st.dataframe(df_logs, use_container_width=True)
+    else:
+        st.info("Aucune tentative enregistrée.")
+
+    st.subheader("🏅 Historique des soumissions")
+    df_subs = pd.read_sql_query("SELECT challenge_level, status, points_awarded, submitted_at FROM submissions WHERE hunter_id = ? ORDER BY id DESC LIMIT 10", conn, params=(st.session_state.hunter_id,))
+    if not df_subs.empty:
+        st.dataframe(df_subs, use_container_width=True)
+    else:
+        st.info("Aucune soumission.")
+
+# ---- Zone honey pot (piège) ----
+with st.sidebar.expander("🕳️ ZONE DEBUG (failles intentionnelles)"):
+    st.caption("Cette zone contient une faille SQL intentionnelle. À vous de jouer...")
+    fake_user = st.text_input("Admin ID :", placeholder="admin' --")
+    if st.button("Connexion admin"):
+        # Piège : bannissement immédiat + enregistrement
+        ip = get_visitor_ip()
+        conn.execute("INSERT INTO attack_logs (ip, pseudo, payload, k_mass, status, timestamp) VALUES (?, ?, ?, 99.9, 'HONEYPOT_TRAP', ?)",
+                     (ip, st.session_state.pseudo, fake_user, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        st.error("🚨 ACCÈS BLOQUÉ – tentative interdite. Votre IP a été signalée.")
+        time.sleep(2)
+        st.rerun()
+
+# ---- Footer ----
+st.markdown("---")
+st.caption("© TTU BASTION – Challenge de bug bounty. Toute tentative de DoS ou de compromission du serveur est interdite et entraînera l'exclusion.")
